@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: group-admin-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false          # Set manually in Render dashboard
+      - key: MONGO_URI
+        sync: false          # Set manually in Render dashboard
+      - key: OWNER_IDS
+        sync: false          # Set manually in Render dashboard (comma-separated)
