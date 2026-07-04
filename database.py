@@ -324,20 +324,44 @@ _pending_captcha: dict[tuple[int, int], int] = {}  # (chat_id, user_id) -> msg_i
 
 # ── Schedules ─────────────────────────────────────────────────────────────────
 
-async def save_schedule(chat_id: int, name: str, doc: dict) -> None:
+async def _next_sched_id(chat_id: int) -> int:
+    """
+    Atomically increment and return the next schedule ID for this chat.
+    IDs are per-chat sequential integers starting at 1.
+    """
+    db = get_db()
+    result = await db.sched_counters.find_one_and_update(
+        {"chat_id": chat_id},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,  # motor uses True for ReturnDocument.AFTER
+    )
+    return result["seq"]
+
+
+async def save_schedule(chat_id: int, name: str, doc: dict) -> int:
     """
     Save or update a schedule for a chat.
+    Returns the sched_id assigned to this schedule.
     doc must include at minimum: schedule_type, message
     For 'always': hour, minute
     For 'one_time': target_dt (ISO string)
     """
     db = get_db()
-    payload = {"chat_id": chat_id, "name": name, **doc}
+    existing = await db.schedules.find_one({"chat_id": chat_id, "name": name})
+    if existing:
+        # Keep the same sched_id on update
+        sched_id = existing["sched_id"]
+    else:
+        sched_id = await _next_sched_id(chat_id)
+
+    payload = {"chat_id": chat_id, "name": name, "sched_id": sched_id, **doc}
     await db.schedules.update_one(
         {"chat_id": chat_id, "name": name},
         {"$set": payload},
         upsert=True,
     )
+    return sched_id
 
 
 async def get_schedule(chat_id: int, name: str) -> dict | None:
@@ -345,10 +369,15 @@ async def get_schedule(chat_id: int, name: str) -> dict | None:
     return await db.schedules.find_one({"chat_id": chat_id, "name": name})
 
 
-async def get_all_schedules(chat_id: int) -> list[dict]:
-    """Return all schedules for one chat."""
+async def get_schedule_by_id(chat_id: int, sched_id: int) -> dict | None:
     db = get_db()
-    cursor = db.schedules.find({"chat_id": chat_id})
+    return await db.schedules.find_one({"chat_id": chat_id, "sched_id": sched_id})
+
+
+async def get_all_schedules(chat_id: int) -> list[dict]:
+    """Return all schedules for one chat, sorted by sched_id."""
+    db = get_db()
+    cursor = db.schedules.find({"chat_id": chat_id}).sort("sched_id", 1)
     return [doc async for doc in cursor]
 
 
@@ -363,3 +392,12 @@ async def delete_schedule(chat_id: int, name: str) -> bool:
     db = get_db()
     result = await db.schedules.delete_one({"chat_id": chat_id, "name": name})
     return result.deleted_count > 0
+
+
+async def delete_schedule_by_id(chat_id: int, sched_id: int) -> dict | None:
+    """Delete by numeric ID. Returns the deleted doc (for name lookup), or None."""
+    db = get_db()
+    doc = await db.schedules.find_one_and_delete(
+        {"chat_id": chat_id, "sched_id": sched_id}
+    )
+    return doc
