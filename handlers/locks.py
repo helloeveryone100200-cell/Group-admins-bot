@@ -78,10 +78,22 @@ ALL_OFF = ChatPermissions(
 
 
 async def _set_one_perm(bot, chat_id: int, perm_key: str, value: bool) -> None:
-    """Read current chat permissions, flip one field, then apply."""
+    """
+    Flip exactly one permission field on a chat.
+    Uses current chat permissions as the base; falls back to all-True
+    defaults when the chat has no permissions object, so we never
+    accidentally over-restrict with unintended False fields.
+    """
+    # Safe baseline: all permissions open
+    kwargs: dict = {f: True for f in _PERM_FIELDS}
+    # Override with whatever the chat currently has set
     chat_obj = await bot.get_chat(chat_id)
-    perms = chat_obj.permissions or ChatPermissions()
-    kwargs = {f: getattr(perms, f, None) for f in _PERM_FIELDS}
+    if chat_obj.permissions is not None:
+        for f in _PERM_FIELDS:
+            v = getattr(chat_obj.permissions, f, None)
+            if v is not None:
+                kwargs[f] = v
+    # Apply the one change
     kwargs[perm_key] = value
     await bot.set_chat_permissions(chat_id, ChatPermissions(**kwargs))
 
@@ -116,6 +128,9 @@ async def lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if lock_type == "all":
             await chat.set_permissions(ALL_OFF)
+            # Persist all lock types as locked in DB
+            for lt in LOCK_TYPES:
+                await db.set_lock(chat.id, lt, True)
         else:
             perm_key = LOCK_TYPES[lock_type]
             await _set_one_perm(context.bot, chat.id, perm_key, False)
@@ -159,6 +174,9 @@ async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if lock_type == "all":
             await chat.set_permissions(ALL_ON)
+            # Persist all lock types as unlocked in DB
+            for lt in LOCK_TYPES:
+                await db.set_lock(chat.id, lt, False)
         else:
             perm_key = LOCK_TYPES[lock_type]
             await _set_one_perm(context.bot, chat.id, perm_key, True)
