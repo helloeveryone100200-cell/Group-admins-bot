@@ -1,5 +1,6 @@
 """
 Welcome / Goodbye message handlers.
+All bot replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
 from telegram import Update, ChatMemberUpdated
@@ -9,6 +10,7 @@ from telegram.constants import ParseMode, ChatMemberStatus
 import database as db
 from helpers.decorators import admin_only
 from helpers.formatting import bold, italic, mono, mention, error, success, header, info_line
+from helpers.utils import send_and_delete
 
 
 def _format_msg(text: str, user, chat) -> str:
@@ -50,7 +52,8 @@ async def on_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             await context.bot.send_message(
                 chat.id,
-                f"{mention(user.full_name, user.id)}, you are restricted until you type {mono('/verify')} to prove you are human.",
+                f"{mention(user.full_name, user.id)}, you are restricted until you type "
+                f"{mono('/verify')} to prove you are human.",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -81,14 +84,17 @@ async def on_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg = update.effective_message
     text = await db.get_welcome(chat.id)
     if not text:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{bold('No welcome message set.')}\n{italic('Use /setwelcome <text> to set one.')}",
             parse_mode=ParseMode.HTML,
         )
         return
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         f"{header('Current Welcome Message')}\n\n{text}",
         parse_mode=ParseMode.HTML,
     )
@@ -98,9 +104,11 @@ async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if not args:
-        await update.message.reply_text(
-            f"{error('Usage:')} /setwelcome <message>\n\n"
+        await send_and_delete(
+            msg,
+            f"{error('Usage:')} /setwelcome &lt;message&gt;\n\n"
             f"{italic('Placeholders:')}\n"
             f"  {mono('{name}')} — user mention\n"
             f"  {mono('{username}')} — @username\n"
@@ -110,17 +118,15 @@ async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = " ".join(args)
     await db.set_welcome(chat.id, text)
-    await update.message.reply_text(
-        success("Welcome message saved!"),
-        parse_mode=ParseMode.HTML,
-    )
+    await send_and_delete(msg, success("Welcome message saved!"), parse_mode=ParseMode.HTML)
 
 
 @admin_only
 async def clearwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await db.clear_welcome(chat.id)
-    await update.message.reply_text(
+    await send_and_delete(
+        update.effective_message,
         success("Welcome message cleared."),
         parse_mode=ParseMode.HTML,
     )
@@ -131,14 +137,17 @@ async def clearwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg = update.effective_message
     text = await db.get_goodbye(chat.id)
     if not text:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{bold('No goodbye message set.')}\n{italic('Use /setgoodbye <text> to set one.')}",
             parse_mode=ParseMode.HTML,
         )
         return
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         f"{header('Current Goodbye Message')}\n\n{text}",
         parse_mode=ParseMode.HTML,
     )
@@ -148,25 +157,25 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if not args:
-        await update.message.reply_text(
-            error("Usage: /setgoodbye <message>"),
+        await send_and_delete(
+            msg,
+            error("Usage: /setgoodbye &lt;message&gt;"),
             parse_mode=ParseMode.HTML,
         )
         return
     text = " ".join(args)
     await db.set_goodbye(chat.id, text)
-    await update.message.reply_text(
-        success("Goodbye message saved!"),
-        parse_mode=ParseMode.HTML,
-    )
+    await send_and_delete(msg, success("Goodbye message saved!"), parse_mode=ParseMode.HTML)
 
 
 @admin_only
 async def cleargoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await db.clear_goodbye(chat.id)
-    await update.message.reply_text(
+    await send_and_delete(
+        update.effective_message,
         success("Goodbye message cleared."),
         parse_mode=ParseMode.HTML,
     )
@@ -177,10 +186,10 @@ async def cleargoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
+    msg = update.effective_message
     key = (chat.id, user.id)
     if key in db._pending_captcha:
         del db._pending_captcha[key]
-        # restore permissions
         try:
             from telegram import ChatPermissions
             await chat.restrict_member(
@@ -200,7 +209,8 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             success(f"Welcome, {mention(user.full_name, user.id)}! You are verified ✅"),
             parse_mode=ParseMode.HTML,
         )
@@ -209,6 +219,12 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat.id, _format_msg(wtext, user, chat), parse_mode=ParseMode.HTML
             )
+    else:
+        await send_and_delete(
+            msg,
+            error("No pending captcha for you."),
+            parse_mode=ParseMode.HTML,
+        )
 
 
 def register(app):

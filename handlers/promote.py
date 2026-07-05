@@ -1,5 +1,6 @@
 """
 Promote, demote, admin title commands.
+All bot replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
 from telegram import Update, ChatMemberAdministrator, ChatMemberOwner
@@ -8,6 +9,7 @@ from telegram.constants import ParseMode
 
 from helpers.decorators import admin_only, bot_admin_required
 from helpers.formatting import bold, italic, mono, mention, error, success, header, info_line
+from helpers.utils import send_and_delete
 
 
 async def _get_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -31,8 +33,13 @@ async def _get_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, title = await _get_target(update, context)
     chat = update.effective_chat
+    msg = update.effective_message
     if not user:
-        await update.message.reply_text(error("Reply to a user or provide @username to promote."), parse_mode=ParseMode.HTML)
+        await send_and_delete(
+            msg,
+            error("Reply to a user or provide @username to promote."),
+            parse_mode=ParseMode.HTML,
+        )
         return
     try:
         await chat.promote_member(
@@ -50,14 +57,15 @@ async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.set_chat_administrator_custom_title(chat.id, user.id, title[:16])
             except Exception:
                 pass
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{header('Admin Promoted')}\n\n"
             f"{info_line('User', mention(user.full_name, user.id))}\n"
-            f"{info_line('Title', title or 'Admin') }",
+            f"{info_line('Title', title or 'Admin')}",
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        await update.message.reply_text(error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 # ── /demote ───────────────────────────────────────────────────────────────────
@@ -67,8 +75,13 @@ async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, _ = await _get_target(update, context)
     chat = update.effective_chat
+    msg = update.effective_message
     if not user:
-        await update.message.reply_text(error("Reply to a user or provide @username to demote."), parse_mode=ParseMode.HTML)
+        await send_and_delete(
+            msg,
+            error("Reply to a user or provide @username to demote."),
+            parse_mode=ParseMode.HTML,
+        )
         return
     try:
         await chat.promote_member(
@@ -81,12 +94,13 @@ async def demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_manage_chat=False,
             can_manage_video_chats=False,
         )
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             success(f"{mention(user.full_name, user.id)} has been {bold('demoted')}."),
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        await update.message.reply_text(error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 # ── /title ────────────────────────────────────────────────────────────────────
@@ -96,20 +110,23 @@ async def demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, ttl = await _get_target(update, context)
     chat = update.effective_chat
+    msg = update.effective_message
     if not user or not ttl:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{error('Usage:')} /title @username {italic('custom title')}",
             parse_mode=ParseMode.HTML,
         )
         return
     try:
         await context.bot.set_chat_administrator_custom_title(chat.id, user.id, ttl[:16])
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             success(f"Admin title for {mention(user.full_name, user.id)} set to {mono(ttl[:16])}."),
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        await update.message.reply_text(error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 def register(app):

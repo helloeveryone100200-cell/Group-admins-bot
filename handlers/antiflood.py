@@ -1,5 +1,6 @@
 """
 Anti-flood protection.
+All bot command replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
 import time
@@ -11,6 +12,7 @@ from telegram.constants import ParseMode
 import database as db
 from helpers.decorators import admin_only
 from helpers.formatting import bold, mono, mention, error, success, header, italic
+from helpers.utils import send_and_delete
 
 # In-memory flood tracker: {(chat_id, user_id): deque of timestamps}
 _tracker: dict[tuple[int, int], deque] = defaultdict(deque)
@@ -22,32 +24,38 @@ _tracker: dict[tuple[int, int], deque] = defaultdict(deque)
 async def antiflood(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if not args:
         limit = await db.get_flood_limit(chat.id)
         mode = await db.get_flood_mode(chat.id)
         status = bold("ENABLED") if limit > 0 else bold("DISABLED")
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{header('Anti-Flood')}\n\n"
             f"{bold('Status:')} {status}\n"
             f"{bold('Limit:')} {mono(str(limit) if limit else 'Off')}\n"
             f"{bold('Action:')} {mono(mode)}\n\n"
-            f"{italic('Usage:')} /antiflood <number>  {italic('(0 = disable)')}",
+            f"{italic('Usage:')} /antiflood &lt;number&gt;  {italic('(0 = disable)')}",
             parse_mode=ParseMode.HTML,
         )
         return
     if not args[0].isdigit():
-        await update.message.reply_text(error("Please provide a number."), parse_mode=ParseMode.HTML)
+        await send_and_delete(
+            msg, error("Please provide a number."), parse_mode=ParseMode.HTML
+        )
         return
     limit = int(args[0])
     await db.set_flood_limit(chat.id, limit)
     if limit == 0:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             success("Anti-flood has been disabled."),
             parse_mode=ParseMode.HTML,
         )
     else:
-        await update.message.reply_text(
-            success(f"Anti-flood set to {bold(str(limit))} messages."),
+        await send_and_delete(
+            msg,
+            success(f"Anti-flood set to {bold(str(limit))} messages per 10 seconds."),
             parse_mode=ParseMode.HTML,
         )
 
@@ -58,20 +66,24 @@ async def antiflood(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def floodmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     modes = ["ban", "kick", "mute", "warn"]
     if not args or args[0].lower() not in modes:
         current = await db.get_flood_mode(chat.id)
         opts = " | ".join(mono(m) for m in modes)
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{header('Flood Mode')}\n\n"
             f"{bold('Current:')} {mono(current)}\n"
-            f"{italic('Options:')} {opts}",
+            f"{italic('Options:')} {opts}\n"
+            f"{italic('Usage:')} /floodmode &lt;mode&gt;",
             parse_mode=ParseMode.HTML,
         )
         return
     mode = args[0].lower()
     await db.set_flood_mode(chat.id, mode)
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         success(f"Flood action set to {bold(mode)}."),
         parse_mode=ParseMode.HTML,
     )

@@ -1,5 +1,6 @@
 """
-Info commands: info, chatinfo, adminlist, id, invite.
+Info commands: id, info, chatinfo, adminlist, invite.
+All bot replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
 from telegram import Update, ChatMemberAdministrator, ChatMemberOwner
@@ -7,6 +8,7 @@ from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
 
 from helpers.formatting import bold, italic, mono, mention, header, info_line, error, success
+from helpers.utils import send_and_delete
 from config import OWNER_IDS
 
 
@@ -35,7 +37,7 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg.reply_to_message and msg.reply_to_message.from_user:
         u = msg.reply_to_message.from_user
         lines.append(f"{info_line('Replied user ID', str(u.id))}")
-    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    await send_and_delete(msg, "\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 # ── /info ─────────────────────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await _get_target(update, context)
     chat = update.effective_chat
+    msg = update.effective_message
 
     try:
         member = await chat.get_member(user.id)
@@ -61,15 +64,15 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info_line("Status", status),
         info_line("Bot", "Yes" if user.is_bot else "No"),
         info_line("Bot Owner", "✅ Yes" if is_owner_flag else "No"),
-        info_line("DC", str(user.id)[:3] + "xxx"),
     ]
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    await send_and_delete(msg, "\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 # ── /chatinfo ─────────────────────────────────────────────────────────────────
 
 async def chatinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg = update.effective_message
     members = await context.bot.get_chat_member_count(chat.id)
     lines = [
         header("Chat Info"),
@@ -81,13 +84,14 @@ async def chatinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info_line("Members", str(members)),
         info_line("Description", (chat.description or "None")[:60]),
     ]
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    await send_and_delete(msg, "\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 # ── /adminlist ────────────────────────────────────────────────────────────────
 
 async def adminlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg = update.effective_message
     admins = await chat.get_administrators()
     lines = [header("Admin List"), ""]
     for a in admins:
@@ -96,21 +100,23 @@ async def adminlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
         title = getattr(a, "custom_title", None) or ("Owner" if isinstance(a, ChatMemberOwner) else "Admin")
         lines.append(f"  • {mention(u.full_name, u.id)} — {italic(title)}")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    await send_and_delete(msg, "\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 # ── /invite ───────────────────────────────────────────────────────────────────
 
 async def invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg = update.effective_message
     try:
         link = await context.bot.export_chat_invite_link(chat.id)
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{header('Invite Link')}\n\n{mono(link)}",
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        await update.message.reply_text(error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 def register(app):

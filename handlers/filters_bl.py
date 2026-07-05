@@ -1,5 +1,6 @@
 """
 Filters (keyword auto-reply) and Blacklist commands.
+All bot command replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
 from telegram import Update
@@ -9,6 +10,7 @@ from telegram.constants import ParseMode
 import database as db
 from helpers.decorators import admin_only
 from helpers.formatting import bold, italic, mono, mention, error, success, header
+from helpers.utils import send_and_delete
 
 
 # ═══════════════════════════════════════════════════════
@@ -19,16 +21,19 @@ from helpers.formatting import bold, italic, mono, mention, error, success, head
 async def add_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if len(args) < 2:
-        await update.message.reply_text(
-            f"{error('Usage:')} /filter {italic('<keyword>')} {italic('<reply text>')}",
+        await send_and_delete(
+            msg,
+            f"{error('Usage:')} /filter {italic('&lt;keyword&gt;')} {italic('&lt;reply text&gt;')}",
             parse_mode=ParseMode.HTML,
         )
         return
     keyword = args[0].lower()
     reply = " ".join(args[1:])
     await db.add_filter(chat.id, keyword, reply)
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         success(f"Filter {mono(keyword)} added!"),
         parse_mode=ParseMode.HTML,
     )
@@ -36,15 +41,18 @@ async def add_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg = update.effective_message
     kws = await db.get_all_filters(chat.id)
     if not kws:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             bold("No filters set in this group."),
             parse_mode=ParseMode.HTML,
         )
         return
     lines = "\n".join(f"  • {mono(k)}" for k in sorted(kws))
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         f"{header('Active Filters')}\n\n{lines}",
         parse_mode=ParseMode.HTML,
     )
@@ -54,21 +62,23 @@ async def list_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if not args:
-        await update.message.reply_text(
-            error("Usage: /stop <keyword>"),
-            parse_mode=ParseMode.HTML,
+        await send_and_delete(
+            msg, error("Usage: /stop &lt;keyword&gt;"), parse_mode=ParseMode.HTML
         )
         return
     keyword = args[0].lower()
     deleted = await db.delete_filter(chat.id, keyword)
     if deleted:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             success(f"Filter {mono(keyword)} removed."),
             parse_mode=ParseMode.HTML,
         )
     else:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             error(f"No filter {mono(keyword)} found."),
             parse_mode=ParseMode.HTML,
         )
@@ -78,7 +88,8 @@ async def stop_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_all_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await db.delete_all_filters(chat.id)
-    await update.message.reply_text(
+    await send_and_delete(
+        update.effective_message,
         success("All filters cleared."),
         parse_mode=ParseMode.HTML,
     )
@@ -108,23 +119,27 @@ async def reply_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if not args:
         words = await db.get_blacklist(chat.id)
         if not words:
-            await update.message.reply_text(
+            await send_and_delete(
+                msg,
                 bold("No blacklisted words in this group."),
                 parse_mode=ParseMode.HTML,
             )
             return
         lines = "\n".join(f"  • {mono(w)}" for w in sorted(words))
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{header('Blacklisted Words')}\n\n{lines}",
             parse_mode=ParseMode.HTML,
         )
         return
     word = " ".join(args).lower()
     await db.add_blacklist(chat.id, word)
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         success(f"Word {mono(word)} added to blacklist."),
         parse_mode=ParseMode.HTML,
     )
@@ -134,21 +149,23 @@ async def blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unblacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if not args:
-        await update.message.reply_text(
-            error("Usage: /unblacklist <word>"),
-            parse_mode=ParseMode.HTML,
+        await send_and_delete(
+            msg, error("Usage: /unblacklist &lt;word&gt;"), parse_mode=ParseMode.HTML
         )
         return
     word = " ".join(args).lower()
     removed = await db.remove_blacklist(chat.id, word)
     if removed:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             success(f"Word {mono(word)} removed from blacklist."),
             parse_mode=ParseMode.HTML,
         )
     else:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             error(f"Word {mono(word)} not in blacklist."),
             parse_mode=ParseMode.HTML,
         )
@@ -158,21 +175,24 @@ async def unblacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def blmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     modes = ["delete", "warn", "mute", "kick", "ban"]
     if not args or args[0].lower() not in modes:
         current = await db.get_blacklist_mode(chat.id)
         opts = " | ".join(mono(m) for m in modes)
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{header('Blacklist Mode')}\n\n"
             f"{bold('Current:')} {mono(current)}\n\n"
             f"{italic('Options:')} {opts}\n"
-            f"{italic('Usage:')} /blmode <mode>",
+            f"{italic('Usage:')} /blmode &lt;mode&gt;",
             parse_mode=ParseMode.HTML,
         )
         return
     mode = args[0].lower()
     await db.set_blacklist_mode(chat.id, mode)
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         success(f"Blacklist action set to {bold(mode)}."),
         parse_mode=ParseMode.HTML,
     )

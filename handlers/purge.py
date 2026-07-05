@@ -1,14 +1,18 @@
 """
-Purge / purgefrom / del commands.
+Purge / del commands.
+All bot replies auto-delete after 5 minutes.
+Note: purgefrom removed — PTB v21 does not expose iter_history_updates.
 """
 from __future__ import annotations
+import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
 from helpers.decorators import admin_only, bot_admin_required
-from helpers.formatting import error, success, bold, mono
+from helpers.formatting import error, success, bold
+from helpers.utils import send_and_delete, _delete_later, AUTO_DELETE_DELAY
 
 
 # ── /del ──────────────────────────────────────────────────────────────────────
@@ -18,13 +22,15 @@ from helpers.formatting import error, success, bold, mono
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg.reply_to_message:
-        await msg.reply_text(error("Reply to a message to delete it."), parse_mode=ParseMode.HTML)
+        await send_and_delete(
+            msg, error("Reply to a message to delete it."), parse_mode=ParseMode.HTML
+        )
         return
     try:
         await msg.reply_to_message.delete()
         await msg.delete()
     except BadRequest as e:
-        await msg.reply_text(error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 # ── /purge ────────────────────────────────────────────────────────────────────
@@ -34,7 +40,11 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg.reply_to_message:
-        await msg.reply_text(error("Reply to the first message you want to purge."), parse_mode=ParseMode.HTML)
+        await send_and_delete(
+            msg,
+            error("Reply to the first message you want to purge."),
+            parse_mode=ParseMode.HTML,
+        )
         return
     start_id = msg.reply_to_message.message_id
     end_id = msg.message_id
@@ -61,7 +71,6 @@ async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success(f"{bold(str(deleted))} messages purged."),
         parse_mode=ParseMode.HTML,
     )
-    import asyncio
     await asyncio.sleep(3)
     try:
         await note.delete()
@@ -69,48 +78,6 @@ async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
-# ── /purgefrom ────────────────────────────────────────────────────────────────
-
-@admin_only
-@bot_admin_required
-async def purgefrom(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Purge all messages from a specific user in the last N messages."""
-    msg = update.effective_message
-    args = context.args or []
-    chat = update.effective_chat
-
-    if not msg.reply_to_message:
-        await msg.reply_text(
-            error("Reply to a message from the user whose messages you want to purge."),
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    target_user_id = msg.reply_to_message.from_user.id if msg.reply_to_message.from_user else None
-    if not target_user_id:
-        await msg.reply_text(error("Cannot determine the target user."), parse_mode=ParseMode.HTML)
-        return
-
-    limit = 200
-    if args and args[0].isdigit():
-        limit = min(int(args[0]), 1000)
-
-    deleted = 0
-    async for m in chat.iter_history_updates(limit=limit):
-        if m.from_user and m.from_user.id == target_user_id:
-            try:
-                await context.bot.delete_message(chat.id, m.message_id)
-                deleted += 1
-            except BadRequest:
-                pass
-
-    await msg.reply_text(
-        success(f"Deleted {bold(str(deleted))} messages from that user."),
-        parse_mode=ParseMode.HTML,
-    )
-
-
 def register(app):
     app.add_handler(CommandHandler("del", delete))
     app.add_handler(CommandHandler("purge", purge))
-    app.add_handler(CommandHandler("purgefrom", purgefrom))

@@ -2,8 +2,10 @@
 Miscellaneous commands:
 start (inline category menu), help, ping, stats, report,
 broadcast, slowmode, setdesc, settitle, captcha, antispam,
-stickerban, nightmode
-All bot replies auto-delete after 5 minutes.
+stickerban, nightmode.
+
+/start welcome message and inline button menus are NEVER auto-deleted.
+All other bot replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
 import time
@@ -84,7 +86,12 @@ _CAT = {
         "/filter &lt;kw&gt; &lt;reply&gt; — Add auto-reply filter\n"
         "/filters — List filters\n"
         "/stop &lt;kw&gt; — Remove a filter\n"
-        "/stopall — Remove all filters"
+        "/stopall — Remove all filters\n"
+        "/note &lt;name&gt; &lt;text&gt; — Save a note\n"
+        "/get &lt;name&gt; — Get a note\n"
+        "/notes — List all notes\n"
+        "/clearnote &lt;name&gt; — Delete a note\n"
+        "/clearallnotes — Delete all notes"
     ),
     "scheduling": (
         "📅 <b>Scheduling</b>\n\n"
@@ -94,7 +101,7 @@ _CAT = {
         "• <b>one_time</b> — fires once at the given date &amp; time, then removed\n"
         "• <b>always</b> — fires every day at the given time\n\n"
         "/schedules — List all active schedules\n"
-        "/delschedule &lt;name&gt; — Delete a schedule"
+        "/delschedule &lt;id or name&gt; — Delete a schedule"
     ),
     "id_info": (
         "🆔 <b>ID &amp; Info</b>\n\n"
@@ -135,6 +142,7 @@ def _back_keyboard() -> InlineKeyboardMarkup:
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
+# NOTE: /start welcome message is NEVER auto-deleted.
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -143,33 +151,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"I am your <b>Group Management Bot</b>.\n"
         f"Choose a category below to see available commands."
     )
-    sent = await update.message.reply_text(
+    await update.message.reply_text(
         text,
         reply_markup=_main_keyboard(),
         parse_mode=ParseMode.HTML,
     )
-    # Auto-delete both user message and bot reply after 5 min
-    asyncio.create_task(_delete_later(update.message, AUTO_DELETE_DELAY))
-    asyncio.create_task(_delete_later(sent, AUTO_DELETE_DELAY))
+    # Do NOT auto-delete the /start welcome message or its inline buttons.
 
 
 # ── /help ─────────────────────────────────────────────────────────────────────
+# NOTE: /help menu message is also NOT auto-deleted (inline buttons still active).
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         f"{header(f'{BOT_NAME} — Commands')}\n\n"
         "Choose a category:"
     )
-    sent = await update.message.reply_text(
+    await update.message.reply_text(
         text,
         reply_markup=_main_keyboard(),
         parse_mode=ParseMode.HTML,
     )
-    asyncio.create_task(_delete_later(update.message, AUTO_DELETE_DELAY))
-    asyncio.create_task(_delete_later(sent, AUTO_DELETE_DELAY))
+    # Do NOT auto-delete; user needs to interact with buttons.
 
 
 # ── Callback: category buttons ────────────────────────────────────────────────
+# Callbacks edit the existing message — no new message sent, no auto-delete needed.
 
 async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -306,9 +313,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def slowmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
     chat = update.effective_chat
+    msg = update.effective_message
     if not args or not args[0].isdigit():
         await send_and_delete(
-            update.message,
+            msg,
             error("Usage: /slowmode <seconds> (0 to disable)"),
             parse_mode=ParseMode.HTML,
         )
@@ -319,9 +327,9 @@ async def slowmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text = success("Slow mode disabled.") if secs == 0 else success(
             f"Slow mode set to {bold(str(secs))} seconds."
         )
-        await send_and_delete(update.message, text, parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, text, parse_mode=ParseMode.HTML)
     except Exception as e:
-        await send_and_delete(update.message, error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 # ── /setdesc ──────────────────────────────────────────────────────────────────
@@ -330,13 +338,14 @@ async def slowmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @bot_admin_required
 async def setdesc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     desc = " ".join(context.args or [])
+    msg = update.effective_message
     try:
         await context.bot.set_chat_description(update.effective_chat.id, desc)
         await send_and_delete(
-            update.message, success("Group description updated."), parse_mode=ParseMode.HTML
+            msg, success("Group description updated."), parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        await send_and_delete(update.message, error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 # ── /settitle ─────────────────────────────────────────────────────────────────
@@ -345,21 +354,22 @@ async def setdesc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @bot_admin_required
 async def settitle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
+    msg = update.effective_message
     if not args:
         await send_and_delete(
-            update.message, error("Usage: /settitle <new title>"), parse_mode=ParseMode.HTML
+            msg, error("Usage: /settitle <new title>"), parse_mode=ParseMode.HTML
         )
         return
     new_title = " ".join(args)
     try:
         await context.bot.set_chat_title(update.effective_chat.id, new_title)
         await send_and_delete(
-            update.message,
+            msg,
             success(f"Group title changed to {bold(new_title)}."),
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        await send_and_delete(update.message, error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 # ── /captcha ──────────────────────────────────────────────────────────────────
@@ -372,7 +382,7 @@ async def captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.set_captcha(chat.id, new_val)
     state = bold("ENABLED ✅") if new_val else bold("DISABLED ❌")
     await send_and_delete(
-        update.message,
+        update.effective_message,
         success(f"Captcha for new members: {state}"),
         parse_mode=ParseMode.HTML,
     )
@@ -389,7 +399,9 @@ async def antispam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _antispam_cache[chat.id] = not _antispam_cache.get(chat.id, False)
     state = bold("ENABLED ✅") if _antispam_cache[chat.id] else bold("DISABLED ❌")
     await send_and_delete(
-        update.message, success(f"Anti-spam: {state}"), parse_mode=ParseMode.HTML
+        update.effective_message,
+        success(f"Anti-spam: {state}"),
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -405,7 +417,7 @@ async def stickerban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     _sticker_ban_cache[chat.id] = not _sticker_ban_cache.get(chat.id, False)
     state = bold("ENABLED ✅") if _sticker_ban_cache[chat.id] else bold("DISABLED ❌")
     await send_and_delete(
-        update.message,
+        update.effective_message,
         success(f"Sticker ban: {state}\n{italic('Stickers will be auto-deleted.')}"),
         parse_mode=ParseMode.HTML,
     )
@@ -424,7 +436,7 @@ async def nightmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if _night_mode_cache[chat.id]:
         await chat.set_permissions(ChatPermissions(can_send_messages=False))
         await send_and_delete(
-            update.message,
+            update.effective_message,
             warn_msg("Night mode ON — chat is locked."),
             parse_mode=ParseMode.HTML,
         )
@@ -438,7 +450,9 @@ async def nightmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             can_send_voice_notes=True,
         ))
         await send_and_delete(
-            update.message, success("Night mode OFF — chat is now open."), parse_mode=ParseMode.HTML
+            update.effective_message,
+            success("Night mode OFF — chat is now open."),
+            parse_mode=ParseMode.HTML,
         )
 
 

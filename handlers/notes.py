@@ -1,5 +1,6 @@
 """
 Notes commands — save, get, list, delete notes per group.
+All bot replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
 from telegram import Update
@@ -9,6 +10,7 @@ from telegram.constants import ParseMode
 import database as db
 from helpers.decorators import admin_only
 from helpers.formatting import bold, italic, mono, error, success, header
+from helpers.utils import send_and_delete
 
 
 # ── /note <name> <text> ───────────────────────────────────────────────────────
@@ -19,40 +21,46 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     msg = update.effective_message
     if len(args) < 2:
-        await msg.reply_text(
-            f"{error('Usage:')} /note {italic('<name>')} {italic('<text>')}",
+        await send_and_delete(
+            msg,
+            f"{error('Usage:')} /note {italic('&lt;name&gt;')} {italic('&lt;text&gt;')}",
             parse_mode=ParseMode.HTML,
         )
         return
     name = args[0].lower()
     text = " ".join(args[1:])
     await db.save_note(chat.id, name, text)
-    await msg.reply_text(
+    await send_and_delete(
+        msg,
         success(f"Note {mono(name)} saved!"),
         parse_mode=ParseMode.HTML,
     )
 
 
-# ── /get <name> or #notename ──────────────────────────────────────────────────
+# ── /get <name> ───────────────────────────────────────────────────────────────
 
 async def get_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if not args:
-        await update.message.reply_text(
-            error("Usage: /get <name>"),
+        await send_and_delete(
+            msg,
+            error("Usage: /get &lt;name&gt;"),
             parse_mode=ParseMode.HTML,
         )
         return
     name = args[0].lower()
     text = await db.get_note(chat.id, name)
     if not text:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             error(f"No note named {mono(name)} found."),
             parse_mode=ParseMode.HTML,
         )
         return
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         f"{header(f'Note: {name}')}\n\n{text}",
         parse_mode=ParseMode.HTML,
     )
@@ -70,7 +78,8 @@ async def hash_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = word[1:].lower()
             text = await db.get_note(chat.id, name)
             if text:
-                await msg.reply_text(
+                await send_and_delete(
+                    msg,
                     f"{header(f'Note: {name}')}\n\n{text}",
                     parse_mode=ParseMode.HTML,
                 )
@@ -80,15 +89,18 @@ async def hash_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg = update.effective_message
     note_list = await db.get_all_notes(chat.id)
     if not note_list:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             f"{bold('No notes saved in this group.')}",
             parse_mode=ParseMode.HTML,
         )
         return
     lines = "\n".join(f"  • {mono(n)}" for n in sorted(note_list))
-    await update.message.reply_text(
+    await send_and_delete(
+        msg,
         f"{header('Saved Notes')}\n\n{lines}\n\n{italic('Use #notename or /get <name> to retrieve.')}",
         parse_mode=ParseMode.HTML,
     )
@@ -100,21 +112,25 @@ async def list_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def clear_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     args = context.args or []
+    msg = update.effective_message
     if not args:
-        await update.message.reply_text(
-            error("Usage: /clearnote <name>"),
+        await send_and_delete(
+            msg,
+            error("Usage: /clearnote &lt;name&gt;"),
             parse_mode=ParseMode.HTML,
         )
         return
     name = args[0].lower()
     deleted = await db.delete_note(chat.id, name)
     if deleted:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             success(f"Note {mono(name)} deleted."),
             parse_mode=ParseMode.HTML,
         )
     else:
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             error(f"No note named {mono(name)} found."),
             parse_mode=ParseMode.HTML,
         )
@@ -126,7 +142,8 @@ async def clear_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def clear_all_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await db.delete_all_notes(chat.id)
-    await update.message.reply_text(
+    await send_and_delete(
+        update.effective_message,
         success("All notes cleared for this group."),
         parse_mode=ParseMode.HTML,
     )

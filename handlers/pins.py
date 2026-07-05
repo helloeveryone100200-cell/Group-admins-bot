@@ -1,5 +1,6 @@
 """
 Pin / unpin / unpinall commands.
+All bot replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
 from telegram import Update
@@ -8,6 +9,7 @@ from telegram.constants import ParseMode
 
 from helpers.decorators import admin_only, bot_admin_required
 from helpers.formatting import error, success, bold
+from helpers.utils import send_and_delete
 
 
 # ── /pin ──────────────────────────────────────────────────────────────────────
@@ -17,17 +19,20 @@ from helpers.formatting import error, success, bold
 async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg.reply_to_message:
-        await msg.reply_text(error("Reply to a message to pin it."), parse_mode=ParseMode.HTML)
+        await send_and_delete(
+            msg, error("Reply to a message to pin it."), parse_mode=ParseMode.HTML
+        )
         return
     silent = "silent" in (context.args or [])
     try:
         await msg.reply_to_message.pin(disable_notification=silent)
-        await msg.reply_text(
+        await send_and_delete(
+            msg,
             success(f"Message {bold('pinned')}" + (" silently." if silent else ".")),
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        await msg.reply_text(error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 # ── /unpin ────────────────────────────────────────────────────────────────────
@@ -42,9 +47,11 @@ async def unpin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.unpin_chat_message(chat.id, msg.reply_to_message.message_id)
         else:
             await context.bot.unpin_chat_message(chat.id)
-        await msg.reply_text(success(f"Message {bold('unpinned')}."), parse_mode=ParseMode.HTML)
+        await send_and_delete(
+            msg, success(f"Message {bold('unpinned')}."), parse_mode=ParseMode.HTML
+        )
     except Exception as e:
-        await msg.reply_text(error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 # ── /unpinall ─────────────────────────────────────────────────────────────────
@@ -53,14 +60,16 @@ async def unpin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @bot_admin_required
 async def unpinall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg = update.effective_message
     try:
         await context.bot.unpin_all_chat_messages(chat.id)
-        await update.message.reply_text(
+        await send_and_delete(
+            msg,
             success(f"All pinned messages {bold('cleared')}."),
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
-        await update.message.reply_text(error(str(e)), parse_mode=ParseMode.HTML)
+        await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
 
 def register(app):
