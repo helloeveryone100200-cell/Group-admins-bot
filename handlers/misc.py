@@ -28,116 +28,141 @@ from helpers.utils import send_and_delete, AUTO_DELETE_DELAY, _delete_later
 
 _CAT = {
     "moderation": (
-        "🛡️ <b>Moderation</b>\n\n"
-        "/ban — Ban a user\n"
-        "/unban — Unban a user\n"
-        "/tban — Temp ban (e.g. /tban @user 1h)\n"
-        "/kick — Kick a user\n"
-        "/mute — Mute a user\n"
-        "/unmute — Unmute a user\n"
-        "/tmute — Temp mute (e.g. /tmute @user 30m)\n"
-        "/promote — Promote to admin\n"
-        "/demote — Remove admin rights\n"
-        "/title — Set custom admin title\n"
-        "/pin [silent] — Pin a message\n"
-        "/unpin — Unpin message\n"
-        "/unpinall — Unpin all messages\n"
-        "/purge — Purge messages (reply to start)\n"
-        "/del — Delete a single message"
+        "🛡️ <b>𝗠𝗢𝗗𝗘𝗥𝗔𝗧𝗜𝗢𝗡</b>\n\n"
+        "/ban — 𝗕𝗮𝗻 𝗮 𝘂𝘀𝗲𝗿\n"
+        "/unban — 𝗨𝗻𝗯𝗮𝗻 𝗮 𝘂𝘀𝗲𝗿\n"
+        "/tban — 𝗧𝗲𝗺𝗽 𝗯𝗮𝗻 (𝗲.𝗴. /tban @user 1h)\n"
+        "/kick — 𝗞𝗶𝗰𝗸 𝗮 𝘂𝘀𝗲𝗿\n"
+        "/mute — 𝗠𝘂𝘁𝗲 𝗮 𝘂𝘀𝗲𝗿\n"
+        "/unmute — 𝗨𝗻𝗺𝘂𝘁𝗲 𝗮 𝘂𝘀𝗲𝗿\n"
+        "/tmute — 𝗧𝗲𝗺𝗽 𝗺𝘂𝘁𝗲 (𝗲.𝗴. /tmute @user 30m)\n"
+        "/promote — 𝗣𝗿𝗼𝗺𝗼𝘁𝗲 𝘁𝗼 𝗮𝗱𝗺𝗶𝗻\n"
+        "/demote — 𝗥𝗲𝗺𝗼𝘃𝗲 𝗮𝗱𝗺𝗶𝗻 𝗿𝗶𝗴𝗵𝘁𝘀\n"
+        "/title — 𝗦𝗲𝘁 𝗰𝘂𝘀𝘁𝗼𝗺 𝗮𝗱𝗺𝗶𝗻 𝘁𝗶𝘁𝗹𝗲\n"
+        "/pin [silent] — 𝗣𝗶𝗻 𝗮 𝗺𝗲𝘀𝘀𝗮𝗴𝗲\n"
+        "/unpin — 𝗨𝗻𝗽𝗶𝗻 𝗺𝗲𝘀𝘀𝗮𝗴𝗲\n"
+        "/unpinall — 𝗨𝗻𝗽𝗶𝗻 𝗮𝗹𝗹 𝗺𝗲𝘀𝘀𝗮𝗴𝗲𝘀\n"
+        "/purge — 𝗣𝘂𝗿𝗴𝗲 𝗺𝗲𝘀𝘀𝗮𝗴𝗲𝘀 (𝗿𝗲𝗽𝗹𝘆 𝘁𝗼 𝘀𝘁𝗮𝗿𝘁)\n"
+        "/del — 𝗗𝗲𝗹𝗲𝘁𝗲 𝗮 𝘀𝗶𝗻𝗴𝗹𝗲 𝗺𝗲𝘀𝘀𝗮𝗴𝗲"
     ),
     "warnings": (
-        "⚠️ <b>Warnings</b>\n\n"
-        "/warn — Warn a user\n"
-        "/unwarn — Remove last warning\n"
-        "/resetwarn — Reset all warnings\n"
-        "/warnings — Show warning count\n"
-        "/warnlimit — Set warn limit (default 3)\n\n"
-        "<i>When limit is reached the user is automatically banned.</i>"
+        "⚠️ <b>𝗪𝗔𝗥𝗡𝗜𝗡𝗚𝗦</b>\n\n"
+        "/warn — 𝗪𝗮𝗿𝗻 𝗮 𝘂𝘀𝗲𝗿\n"
+        "/unwarn — 𝗥𝗲𝗺𝗼𝘃𝗲 𝗹𝗮𝘀𝘁 𝘄𝗮𝗿𝗻𝗶𝗻𝗴\n"
+        "/resetwarn — 𝗥𝗲𝘀𝗲𝘁 𝗮𝗹𝗹 𝘄𝗮𝗿𝗻𝗶𝗻𝗴𝘀\n"
+        "/warnings — 𝗦𝗵𝗼𝘄 𝘄𝗮𝗿𝗻𝗶𝗻𝗴 𝗰𝗼𝘂𝗻𝘁\n"
+        "/warnlimit — 𝗦𝗲𝘁 𝘄𝗮𝗿𝗻 𝗹𝗶𝗺𝗶𝘁 (𝗱𝗲𝗳𝗮𝘂𝗹𝘁 𝟯)\n\n"
+        "<i>𝗪𝗵𝗲𝗻 𝗹𝗶𝗺𝗶𝘁 𝗶𝘀 𝗿𝗲𝗮𝗰𝗵𝗲𝗱 𝘁𝗵𝗲 𝘂𝘀𝗲𝗿 𝗶𝘀 𝗮𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰𝗮𝗹𝗹𝘆 𝗯𝗮𝗻𝗻𝗲𝗱.</i>"
     ),
     "group_control": (
-        "🔒 <b>Group Control</b>\n\n"
-        "/lock &lt;type&gt; — Lock a chat permission\n"
-        "/unlock &lt;type&gt; — Unlock a chat permission\n"
-        "/locktypes — Show all lockable types\n"
-        "/slowmode &lt;seconds&gt; — Set slow mode\n"
-        "/nightmode — Toggle night lock\n"
-        "/setdesc &lt;text&gt; — Set group description\n"
-        "/settitle &lt;text&gt; — Set group title\n"
-        "/antiflood [n] — Set flood limit\n"
-        "/floodmode &lt;mode&gt; — Set flood action\n"
-        "/blacklist [word] — View/add blacklist\n"
-        "/unblacklist &lt;word&gt; — Remove from blacklist\n"
-        "/blmode &lt;mode&gt; — Set blacklist action"
+        "🔒 <b>𝗚𝗥𝗢𝗨𝗣 𝗖𝗢𝗡𝗧𝗥𝗢𝗟</b>\n\n"
+        "/lock &lt;type&gt; — 𝗟𝗼𝗰𝗸 𝗮 𝗰𝗵𝗮𝘁 𝗽𝗲𝗿𝗺𝗶𝘀𝘀𝗶𝗼𝗻\n"
+        "/unlock &lt;type&gt; — 𝗨𝗻𝗹𝗼𝗰𝗸 𝗮 𝗰𝗵𝗮𝘁 𝗽𝗲𝗿𝗺𝗶𝘀𝘀𝗶𝗼𝗻\n"
+        "/locktypes — 𝗦𝗵𝗼𝘄 𝗮𝗹𝗹 𝗹𝗼𝗰𝗸𝗮𝗯𝗹𝗲 𝘁𝘆𝗽𝗲𝘀\n"
+        "/slowmode &lt;seconds&gt; — 𝗦𝗲𝘁 𝘀𝗹𝗼𝘄 𝗺𝗼𝗱𝗲\n"
+        "/nightmode — 𝗧𝗼𝗴𝗴𝗹𝗲 𝗻𝗶𝗴𝗵𝘁 𝗹𝗼𝗰𝗸\n"
+        "/setdesc &lt;text&gt; — 𝗦𝗲𝘁 𝗴𝗿𝗼𝘂𝗽 𝗱𝗲𝘀𝗰𝗿𝗶𝗽𝘁𝗶𝗼𝗻\n"
+        "/settitle &lt;text&gt; — 𝗦𝗲𝘁 𝗴𝗿𝗼𝘂𝗽 𝘁𝗶𝘁𝗹𝗲\n"
+        "/antiflood [n] — 𝗦𝗲𝘁 𝗳𝗹𝗼𝗼𝗱 𝗹𝗶𝗺𝗶𝘁\n"
+        "/floodmode &lt;mode&gt; — 𝗦𝗲𝘁 𝗳𝗹𝗼𝗼𝗱 𝗮𝗰𝘁𝗶𝗼𝗻\n"
+        "/blacklist [word] — 𝗩𝗶𝗲𝘄/𝗮𝗱𝗱 𝗯𝗹𝗮𝗰𝗸𝗹𝗶𝘀𝘁\n"
+        "/unblacklist &lt;word&gt; — 𝗥𝗲𝗺𝗼𝘃𝗲 𝗳𝗿𝗼𝗺 𝗯𝗹𝗮𝗰𝗸𝗹𝗶𝘀𝘁\n"
+        "/blmode &lt;mode&gt; — 𝗦𝗲𝘁 𝗯𝗹𝗮𝗰𝗸𝗹𝗶𝘀𝘁 𝗮𝗰𝘁𝗶𝗼𝗻"
     ),
     "settings": (
-        "⚙️ <b>Settings</b>\n\n"
-        "/welcome — Show current welcome message\n"
-        "/setwelcome — Set welcome message\n"
-        "/clearwelcome — Clear welcome message\n"
-        "/goodbye — Show goodbye message\n"
-        "/setgoodbye — Set goodbye message\n"
-        "/cleargoodbye — Clear goodbye message\n"
-        "/rules — Show group rules\n"
-        "/setrules — Set group rules\n"
-        "/clearrules — Clear group rules\n"
-        "/captcha — Toggle captcha for new members\n"
-        "/antispam — Toggle anti-spam\n"
-        "/stickerban — Toggle sticker ban\n"
-        "/filter &lt;kw&gt; &lt;reply&gt; — Add auto-reply filter\n"
-        "/filters — List filters\n"
-        "/stop &lt;kw&gt; — Remove a filter\n"
-        "/stopall — Remove all filters\n"
-        "/note &lt;name&gt; &lt;text&gt; — Save a note\n"
-        "/get &lt;name&gt; — Get a note\n"
-        "/notes — List all notes\n"
-        "/clearnote &lt;name&gt; — Delete a note\n"
-        "/clearallnotes — Delete all notes"
+        "⚙️ <b>𝗦𝗘𝗧𝗧𝗜𝗡𝗚𝗦</b>\n\n"
+        "/welcome — 𝗦𝗵𝗼𝘄 𝗰𝘂𝗿𝗿𝗲𝗻𝘁 𝘄𝗲𝗹𝗰𝗼𝗺𝗲 𝗺𝗲𝘀𝘀𝗮𝗴𝗲\n"
+        "/setwelcome — 𝗦𝗲𝘁 𝘄𝗲𝗹𝗰𝗼𝗺𝗲 𝗺𝗲𝘀𝘀𝗮𝗴𝗲\n"
+        "/clearwelcome — 𝗖𝗹𝗲𝗮𝗿 𝘄𝗲𝗹𝗰𝗼𝗺𝗲 𝗺𝗲𝘀𝘀𝗮𝗴𝗲\n"
+        "/goodbye — 𝗦𝗵𝗼𝘄 𝗴𝗼𝗼𝗱𝗯𝘆𝗲 𝗺𝗲𝘀𝘀𝗮𝗴𝗲\n"
+        "/setgoodbye — 𝗦𝗲𝘁 𝗴𝗼𝗼𝗱𝗯𝘆𝗲 𝗺𝗲𝘀𝘀𝗮𝗴𝗲\n"
+        "/cleargoodbye — 𝗖𝗹𝗲𝗮𝗿 𝗴𝗼𝗼𝗱𝗯𝘆𝗲 𝗺𝗲𝘀𝘀𝗮𝗴𝗲\n"
+        "/rules — 𝗦𝗵𝗼𝘄 𝗴𝗿𝗼𝘂𝗽 𝗿𝘂𝗹𝗲𝘀\n"
+        "/setrules — 𝗦𝗲𝘁 𝗴𝗿𝗼𝘂𝗽 𝗿𝘂𝗹𝗲𝘀\n"
+        "/clearrules — 𝗖𝗹𝗲𝗮𝗿 𝗴𝗿𝗼𝘂𝗽 𝗿𝘂𝗹𝗲𝘀\n"
+        "/captcha — 𝗧𝗼𝗴𝗴𝗹𝗲 𝗰𝗮𝗽𝘁𝗰𝗵𝗮 𝗳𝗼𝗿 𝗻𝗲𝘄 𝗺𝗲𝗺𝗯𝗲𝗿𝘀\n"
+        "/antispam — 𝗧𝗼𝗴𝗴𝗹𝗲 𝗮𝗻𝘁𝗶-𝘀𝗽𝗮𝗺\n"
+        "/stickerban — 𝗧𝗼𝗴𝗴𝗹𝗲 𝘀𝘁𝗶𝗰𝗸𝗲𝗿 𝗯𝗮𝗻\n"
+        "/filter &lt;kw&gt; &lt;reply&gt; — 𝗔𝗱𝗱 𝗮𝘂𝘁𝗼-𝗿𝗲𝗽𝗹𝘆 𝗳𝗶𝗹𝘁𝗲𝗿\n"
+        "/filters — 𝗟𝗶𝘀𝘁 𝗳𝗶𝗹𝘁𝗲𝗿𝘀\n"
+        "/stop &lt;kw&gt; — 𝗥𝗲𝗺𝗼𝘃𝗲 𝗮 𝗳𝗶𝗹𝘁𝗲𝗿\n"
+        "/stopall — 𝗥𝗲𝗺𝗼𝘃𝗲 𝗮𝗹𝗹 𝗳𝗶𝗹𝘁𝗲𝗿𝘀\n"
+        "/note &lt;name&gt; &lt;text&gt; — 𝗦𝗮𝘃𝗲 𝗮 𝗻𝗼𝘁𝗲\n"
+        "/get &lt;name&gt; — 𝗚𝗲𝘁 𝗮 𝗻𝗼𝘁𝗲\n"
+        "/notes — 𝗟𝗶𝘀𝘁 𝗮𝗹𝗹 𝗻𝗼𝘁𝗲𝘀\n"
+        "/clearnote &lt;name&gt; — 𝗗𝗲𝗹𝗲𝘁𝗲 𝗮 𝗻𝗼𝘁𝗲\n"
+        "/clearallnotes — 𝗗𝗲𝗹𝗲𝘁𝗲 𝗮𝗹𝗹 𝗻𝗼𝘁𝗲𝘀"
     ),
     "scheduling": (
-        "📅 <b>Scheduling</b>\n\n"
-        "<b>Add a schedule:</b>\n"
+        "📅 <b>𝗦𝗖𝗛𝗘𝗗𝗨𝗟𝗜𝗡𝗚</b>\n\n"
+        "<b>𝗔𝗗𝗗 𝗔 𝗦𝗖𝗛𝗘𝗗𝗨𝗟𝗘:</b>\n"
         "<code>/addschedule &lt;name&gt; one_time YYYY-MM-DD HH:MM &lt;msg&gt;</code>\n"
         "<code>/addschedule &lt;name&gt; always HH:MM &lt;msg&gt;</code>\n\n"
-        "• <b>one_time</b> — fires once at the given date &amp; time, then removed\n"
-        "• <b>always</b> — fires every day at the given time\n\n"
-        "/schedules — List all active schedules\n"
-        "/delschedule &lt;id or name&gt; — Delete a schedule"
+        "• <b>𝗼𝗻𝗲_𝘁𝗶𝗺𝗲</b> — 𝗙𝗶𝗿𝗲𝘀 𝗼𝗻𝗰𝗲 𝗮𝘁 𝘁𝗵𝗲 𝗴𝗶𝘃𝗲𝗻 𝗱𝗮𝘁𝗲 &amp; 𝘁𝗶𝗺𝗲, 𝘁𝗵𝗲𝗻 𝗿𝗲𝗺𝗼𝘃𝗲𝗱\n"
+        "• <b>𝗮𝗹𝘄𝗮𝘆𝘀</b> — 𝗙𝗶𝗿𝗲𝘀 𝗲𝘃𝗲𝗿𝘆 𝗱𝗮𝘆 𝗮𝘁 𝘁𝗵𝗲 𝗴𝗶𝘃𝗲𝗻 𝘁𝗶𝗺𝗲\n\n"
+        "/schedules — 𝗟𝗶𝘀𝘁 𝗮𝗹𝗹 𝗮𝗰𝘁𝗶𝘃𝗲 𝘀𝗰𝗵𝗲𝗱𝘂𝗹𝗲𝘀\n"
+        "/delschedule &lt;id or name&gt; — 𝗗𝗲𝗹𝗲𝘁𝗲 𝗮 𝘀𝗰𝗵𝗲𝗱𝘂𝗹𝗲"
     ),
     "id_info": (
-        "🆔 <b>ID &amp; Info</b>\n\n"
-        "/id — Show your / replied user's ID\n"
-        "/info — Detailed user info\n"
-        "/chatinfo — Chat information\n"
-        "/adminlist — List all admins\n"
-        "/invite — Generate invite link\n"
-        "/ping — Check bot latency\n"
-        "/stats — Bot statistics\n"
-        "/report — Report a user to admins"
+        "🆔 <b>𝗜𝗗 &amp; 𝗜𝗡𝗙𝗢</b>\n\n"
+        "/id — 𝗦𝗵𝗼𝘄 𝘆𝗼𝘂𝗿 / 𝗿𝗲𝗽𝗹𝗶𝗲𝗱 𝘂𝘀𝗲𝗿'𝘀 𝗜𝗗\n"
+        "/info — 𝗗𝗲𝘁𝗮𝗶𝗹𝗲𝗱 𝘂𝘀𝗲𝗿 𝗶𝗻𝗳𝗼\n"
+        "/chatinfo — 𝗖𝗵𝗮𝘁 𝗶𝗻𝗳𝗼𝗿𝗺𝗮𝘁𝗶𝗼𝗻\n"
+        "/adminlist — 𝗟𝗶𝘀𝘁 𝗮𝗹𝗹 𝗮𝗱𝗺𝗶𝗻𝘀\n"
+        "/invite — 𝗚𝗲𝗻𝗲𝗿𝗮𝘁𝗲 𝗶𝗻𝘃𝗶𝘁𝗲 𝗹𝗶𝗻𝗸\n"
+        "/ping — 𝗖𝗵𝗲𝗰𝗸 𝗯𝗼𝘁 𝗹𝗮𝘁𝗲𝗻𝗰𝘆\n"
+        "/stats — 𝗕𝗼𝘁 𝘀𝘁𝗮𝘁𝗶𝘀𝘁𝗶𝗰𝘀\n"
+        "/report — 𝗥𝗲𝗽𝗼𝗿𝘁 𝗮 𝘂𝘀𝗲𝗿 𝘁𝗼 𝗮𝗱𝗺𝗶𝗻𝘀"
+    ),
+    "owner": (
+        "👑 <b>𝗢𝗪𝗡𝗘𝗥 𝗣𝗔𝗡𝗘𝗟</b>\n\n"
+        "/broadcast &lt;text&gt; — 𝗦𝗲𝗻𝗱 𝗺𝗲𝘀𝘀𝗮𝗴𝗲 𝘁𝗼 𝗮𝗹𝗹 𝗴𝗿𝗼𝘂𝗽𝘀\n"
+        "/stats — 𝗩𝗶𝗲𝘄 𝗯𝗼𝘁 𝘀𝘁𝗮𝘁𝗶𝘀𝘁𝗶𝗰𝘀\n\n"
+        "<i>𝗢𝗻𝗹𝘆 𝗮𝗰𝗰𝗲𝘀𝘀𝗶𝗯𝗹𝗲 𝗯𝘆 𝗯𝗼𝘁 𝗼𝘄𝗻𝗲𝗿𝘀.</i>"
     ),
 }
 
 # ── Inline keyboard builders ──────────────────────────────────────────────────
 
-def _main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def _main_keyboard(bot_username: str = "") -> InlineKeyboardMarkup:
+    rows = [
         [
-            InlineKeyboardButton("🛡️ MODERATION",   callback_data="help_moderation"),
-            InlineKeyboardButton("⚠️ WARNINGS",     callback_data="help_warnings"),
+            InlineKeyboardButton("🛡️ 𝗠𝗢𝗗𝗘𝗥𝗔𝗧𝗜𝗢𝗡",   callback_data="help_moderation"),
+            InlineKeyboardButton("⚠️ 𝗪𝗔𝗥𝗡𝗜𝗡𝗚𝗦",     callback_data="help_warnings"),
         ],
         [
-            InlineKeyboardButton("🔒 GROUP CONTROL", callback_data="help_group_control"),
-            InlineKeyboardButton("⚙️ SETTINGS",      callback_data="help_settings"),
+            InlineKeyboardButton("🔒 𝗚𝗥𝗢𝗨𝗣 𝗖𝗢𝗡𝗧𝗥𝗢𝗟", callback_data="help_group_control"),
+            InlineKeyboardButton("⚙️ 𝗦𝗘𝗧𝗧𝗜𝗡𝗚𝗦",      callback_data="help_settings"),
         ],
         [
-            InlineKeyboardButton("📅 SCHEDULING",    callback_data="help_scheduling"),
-            InlineKeyboardButton("🆔 ID & INFO",     callback_data="help_id_info"),
+            InlineKeyboardButton("📅 𝗦𝗖𝗛𝗘𝗗𝗨𝗟𝗜𝗡𝗚",    callback_data="help_scheduling"),
+            InlineKeyboardButton("🆔 𝗜𝗗 & 𝗜𝗡𝗙𝗢",     callback_data="help_id_info"),
         ],
-    ])
+        [
+            InlineKeyboardButton("👑 𝗢𝗪𝗡𝗘𝗥 𝗣𝗔𝗡𝗘𝗟",   callback_data="help_owner"),
+        ],
+    ]
+    if bot_username:
+        rows.append([
+            InlineKeyboardButton(
+                "➕ 𝗔𝗗𝗗 𝗧𝗢 𝗚𝗥𝗢𝗨𝗣",
+                url=f"https://t.me/{bot_username}?startgroup=true",
+            ),
+            InlineKeyboardButton(
+                "📤 𝗦𝗛𝗔𝗥𝗘",
+                url=(
+                    f"https://t.me/share/url"
+                    f"?url=https://t.me/{bot_username}"
+                    f"&text=Add%20this%20group%20management%20bot%20to%20your%20group%21"
+                ),
+            ),
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 def _back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("« Back", callback_data="help_main"),
+        InlineKeyboardButton("« 𝗕𝗔𝗖𝗞", callback_data="help_main"),
     ]])
 
 
@@ -146,14 +171,15 @@ def _back_keyboard() -> InlineKeyboardMarkup:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
+    username = context.bot.username or ""
     text = (
-        f"👋 <b>Hello, {user.full_name}!</b>\n\n"
-        f"I am your <b>Group Management Bot</b>.\n"
-        f"Choose a category below to see available commands."
+        f"👋 <b>𝗛𝗘𝗟𝗟𝗢, {user.full_name}!</b>\n\n"
+        f"𝗜 𝗔𝗠 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣 𝗠𝗔𝗡𝗔𝗚𝗘𝗠𝗘𝗡𝗧 𝗕𝗢𝗧.\n"
+        f"𝗖𝗛𝗢𝗢𝗦𝗘 𝗔 𝗖𝗔𝗧𝗘𝗚𝗢𝗥𝗬 𝗕𝗘𝗟𝗢𝗪 𝗧𝗢 𝗦𝗘𝗘 𝗔𝗩𝗔𝗜𝗟𝗔𝗕𝗟𝗘 𝗖𝗢𝗠𝗠𝗔𝗡𝗗𝗦."
     )
     await update.message.reply_text(
         text,
-        reply_markup=_main_keyboard(),
+        reply_markup=_main_keyboard(username),
         parse_mode=ParseMode.HTML,
     )
     # Do NOT auto-delete the /start welcome message or its inline buttons.
@@ -163,13 +189,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # NOTE: /help menu message is also NOT auto-deleted (inline buttons still active).
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    username = context.bot.username or ""
     text = (
         f"{header(f'{BOT_NAME} — Commands')}\n\n"
-        "Choose a category:"
+        "𝗖𝗛𝗢𝗢𝗦𝗘 𝗔 𝗖𝗔𝗧𝗘𝗚𝗢𝗥𝗬:"
     )
     await update.message.reply_text(
         text,
-        reply_markup=_main_keyboard(),
+        reply_markup=_main_keyboard(username),
         parse_mode=ParseMode.HTML,
     )
     # Do NOT auto-delete; user needs to interact with buttons.
@@ -184,9 +211,10 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     data = query.data  # e.g. "help_moderation"
 
     if data == "help_main":
+        username = context.bot.username or ""
         await query.edit_message_text(
-            "👋 <b>Choose a category:</b>",
-            reply_markup=_main_keyboard(),
+            "👋 <b>𝗖𝗛𝗢𝗢𝗦𝗘 𝗔 𝗖𝗔𝗧𝗘𝗚𝗢𝗥𝗬:</b>",
+            reply_markup=_main_keyboard(username),
             parse_mode=ParseMode.HTML,
         )
         return
