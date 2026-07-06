@@ -124,7 +124,7 @@ _CAT = {
 
 # ── Inline keyboard builders ──────────────────────────────────────────────────
 
-def _main_keyboard(bot_username: str = "") -> InlineKeyboardMarkup:
+def _main_keyboard(bot_username: str = "", is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton("🛡️ 𝗠𝗢𝗗𝗘𝗥𝗔𝗧𝗜𝗢𝗡",   callback_data="help_moderation"),
@@ -138,10 +138,12 @@ def _main_keyboard(bot_username: str = "") -> InlineKeyboardMarkup:
             InlineKeyboardButton("📅 𝗦𝗖𝗛𝗘𝗗𝗨𝗟𝗜𝗡𝗚",    callback_data="help_scheduling"),
             InlineKeyboardButton("🆔 𝗜𝗗 & 𝗜𝗡𝗙𝗢",     callback_data="help_id_info"),
         ],
-        [
-            InlineKeyboardButton("👑 𝗢𝗪𝗡𝗘𝗥 𝗣𝗔𝗡𝗘𝗟",   callback_data="help_owner"),
-        ],
     ]
+    # Owner Panel row — visible only to bot owners
+    if is_owner:
+        rows.append([
+            InlineKeyboardButton("👑 𝗢𝗪𝗡𝗘𝗥 𝗣𝗔𝗡𝗘𝗟", callback_data="help_owner"),
+        ])
     if bot_username:
         rows.append([
             InlineKeyboardButton(
@@ -172,6 +174,7 @@ def _back_keyboard() -> InlineKeyboardMarkup:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     username = context.bot.username or ""
+    is_owner = user.id in OWNER_IDS
     text = (
         f"👋 <b>𝗛𝗘𝗟𝗟𝗢, {user.full_name}!</b>\n\n"
         f"𝗜 𝗔𝗠 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣 𝗠𝗔𝗡𝗔𝗚𝗘𝗠𝗘𝗡𝗧 𝗕𝗢𝗧.\n"
@@ -179,7 +182,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await update.message.reply_text(
         text,
-        reply_markup=_main_keyboard(username),
+        reply_markup=_main_keyboard(username, is_owner=is_owner),
         parse_mode=ParseMode.HTML,
     )
     # Do NOT auto-delete the /start welcome message or its inline buttons.
@@ -190,13 +193,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     username = context.bot.username or ""
+    is_owner = update.effective_user.id in OWNER_IDS
     text = (
         f"{header(f'{BOT_NAME} — Commands')}\n\n"
         "𝗖𝗛𝗢𝗢𝗦𝗘 𝗔 𝗖𝗔𝗧𝗘𝗚𝗢𝗥𝗬:"
     )
     await update.message.reply_text(
         text,
-        reply_markup=_main_keyboard(username),
+        reply_markup=_main_keyboard(username, is_owner=is_owner),
         parse_mode=ParseMode.HTML,
     )
     # Do NOT auto-delete; user needs to interact with buttons.
@@ -212,9 +216,10 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "help_main":
         username = context.bot.username or ""
+        is_owner = query.from_user.id in OWNER_IDS
         await query.edit_message_text(
             "👋 <b>𝗖𝗛𝗢𝗢𝗦𝗘 𝗔 𝗖𝗔𝗧𝗘𝗚𝗢𝗥𝗬:</b>",
-            reply_markup=_main_keyboard(username),
+            reply_markup=_main_keyboard(username, is_owner=is_owner),
             parse_mode=ParseMode.HTML,
         )
         return
