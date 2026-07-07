@@ -116,8 +116,18 @@ _CAT = {
     ),
     "owner": (
         "👑 <b>𝗢𝗪𝗡𝗘𝗥 𝗣𝗔𝗡𝗘𝗟</b>\n\n"
-        "/broadcast &lt;text&gt; — 𝗦𝗲𝗻𝗱 𝗺𝗲𝘀𝘀𝗮𝗴𝗲 𝘁𝗼 𝗮𝗹𝗹 𝗴𝗿𝗼𝘂𝗽𝘀\n"
-        "/stats — 𝗩𝗶𝗲𝘄 𝗯𝗼𝘁 𝘀𝘁𝗮𝘁𝗶𝘀𝘁𝗶𝗰𝘀\n\n"
+        "/status — 𝗦𝗬𝗦𝗧𝗘𝗠 𝗦𝗧𝗔𝗧𝗨𝗦 (𝗨𝗦𝗘𝗥𝗦 & 𝗚𝗥𝗢𝗨𝗣𝗦)\n"
+        "/ping — 𝗥𝗘𝗦𝗣𝗢𝗡𝗦𝗘 𝗦𝗣𝗘𝗘𝗗 (𝗠𝗦)\n"
+        "/listusers — 𝗧𝗢𝗧𝗔𝗟 𝗨𝗦𝗘𝗥 𝗖𝗢𝗨𝗡𝗧\n"
+        "/listgroups — 𝗔𝗟𝗟 𝗥𝗘𝗚𝗜𝗦𝗧𝗘𝗥𝗘𝗗 𝗚𝗥𝗢𝗨𝗣𝗦\n"
+        "/blockuser &lt;id&gt; — 𝗕𝗟𝗢𝗖𝗞 𝗔 𝗨𝗦𝗘𝗥 𝗚𝗟𝗢𝗕𝗔𝗟𝗟𝗬\n"
+        "/unblockuser &lt;id&gt; — 𝗨𝗡𝗕𝗟𝗢𝗖𝗞 𝗔 𝗨𝗦𝗘𝗥\n"
+        "/blockgroup &lt;id&gt; — 𝗕𝗟𝗢𝗖𝗞 & 𝗟𝗘𝗔𝗩𝗘 𝗔 𝗚𝗥𝗢𝗨𝗣\n"
+        "/unblockgroup &lt;id&gt; — 𝗨𝗡𝗕𝗟𝗢𝗖𝗞 𝗔 𝗚𝗥𝗢𝗨𝗣\n"
+        "/broadcast all &lt;text&gt; — 𝗕𝗥𝗢𝗔𝗗𝗖𝗔𝗦𝗧 𝗧𝗢 𝗔𝗟𝗟 𝗨𝗦𝗘𝗥𝗦 & 𝗚𝗥𝗢𝗨𝗣𝗦\n"
+        "/broadcast group &lt;id&gt; &lt;text&gt; — 𝗦𝗘𝗡𝗗 𝗧𝗢 𝗢𝗡𝗘 𝗚𝗥𝗢𝗨𝗣\n"
+        "/broadcast user &lt;id&gt; &lt;text&gt; — 𝗦𝗘𝗡𝗗 𝗧𝗢 𝗢𝗡𝗘 𝗨𝗦𝗘𝗥\n"
+        "/post — 𝗖𝗥𝗘𝗔𝗧𝗘 & 𝗦𝗘𝗡𝗗 𝗔𝗡 𝗔𝗡𝗡𝗢𝗨𝗡𝗖𝗘𝗠𝗘𝗡𝗧 𝗪𝗜𝗧𝗛 𝗕𝗨𝗧𝗧𝗢𝗡𝗦\n\n"
         "<i>𝗢𝗻𝗹𝘆 𝗮𝗰𝗰𝗲𝘀𝘀𝗶𝗯𝗹𝗲 𝗯𝘆 𝗯𝗼𝘁 𝗼𝘄𝗻𝗲𝗿𝘀.</i>"
     ),
 }
@@ -498,7 +508,7 @@ def register(app) -> None:
     app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("report", report))
-    app.add_handler(CommandHandler("broadcast", broadcast))
+    # NOTE: /broadcast is registered in handlers/owner.py (owner-only, extended syntax)
     app.add_handler(CommandHandler("slowmode", slowmode))
     app.add_handler(CommandHandler("setdesc", setdesc))
     app.add_handler(CommandHandler("settitle", settitle))

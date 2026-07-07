@@ -8,10 +8,11 @@ import logging
 import signal
 
 from telegram import Update
-from telegram.ext import Application
+from telegram.ext import Application, TypeHandler, ApplicationHandlerStop
 
-from config import BOT_TOKEN, BOT_NAME, VERSION
+from config import BOT_TOKEN, BOT_NAME, VERSION, OWNER_IDS
 from keep_alive import keep_alive
+import database as db
 
 import handlers.admin      as h_admin
 import handlers.promote    as h_promote
@@ -26,6 +27,7 @@ import handlers.antiflood  as h_antiflood
 import handlers.info       as h_info
 import handlers.misc       as h_misc
 import handlers.schedule   as h_schedule
+import handlers.owner      as h_owner
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s — %(message)s",
@@ -38,9 +40,41 @@ async def error_handler(update: object, context) -> None:
     log.error("Exception while handling update:", exc_info=context.error)
 
 
+async def _update_middleware(update: Update, context) -> None:
+    """
+    Group=-1 middleware — executes before every other handler.
+
+    • Registers users and groups in MongoDB on first contact.
+    • Silently drops updates from globally blocked users/groups.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if user and not user.is_bot:
+        # Track this user so /listusers and /broadcast user work
+        await db.register_user(user.id, user.username, user.full_name or "")
+        # Owners are never blocked
+        if user.id not in OWNER_IDS and await db.is_user_blocked(user.id):
+            raise ApplicationHandlerStop()
+
+    if chat and chat.type in ("group", "supergroup"):
+        # Track this group so /listgroups and /broadcast all work
+        await db.register_chat(chat.id, chat.title or "Unknown")
+        # Auto-leave blocked groups
+        if await db.is_group_blocked(chat.id):
+            try:
+                await context.bot.leave_chat(chat.id)
+            except Exception:
+                pass
+            raise ApplicationHandlerStop()
+
+
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
+    # Group=-1: runs first, registers users/groups, enforces global blocks
+    app.add_handler(TypeHandler(Update, _update_middleware), group=-1)
     h_misc.register(app)
+    h_owner.register(app)       # owner panel commands (incl. /broadcast)
     h_admin.register(app)
     h_promote.register(app)
     h_pins.register(app)

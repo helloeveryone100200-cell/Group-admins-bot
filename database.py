@@ -401,3 +401,81 @@ async def delete_schedule_by_id(chat_id: int, sched_id: int) -> dict | None:
         {"chat_id": chat_id, "sched_id": sched_id}
     )
     return doc
+
+
+# ── User tracking ─────────────────────────────────────────────────────────────
+
+async def register_user(user_id: int, username: str | None, full_name: str) -> None:
+    """Upsert a user record; called on every bot interaction via middleware."""
+    db = get_db()
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"user_id": user_id, "username": username, "full_name": full_name}},
+        upsert=True,
+    )
+
+
+async def count_users() -> int:
+    db = get_db()
+    return await db.users.count_documents({})
+
+
+async def get_all_groups() -> list[dict]:
+    """All groups the bot has ever seen (stored via register_chat)."""
+    db = get_db()
+    cursor = db.settings.find({}, {"chat_id": 1, "title": 1, "_id": 0})
+    return [doc async for doc in cursor]
+
+
+# ── Global user block ─────────────────────────────────────────────────────────
+
+async def block_user(user_id: int) -> None:
+    db = get_db()
+    await db.blocked_users.update_one(
+        {"user_id": user_id},
+        {"$set": {"user_id": user_id}},
+        upsert=True,
+    )
+
+
+async def unblock_user(user_id: int) -> bool:
+    db = get_db()
+    result = await db.blocked_users.delete_one({"user_id": user_id})
+    return result.deleted_count > 0
+
+
+async def is_user_blocked(user_id: int) -> bool:
+    db = get_db()
+    return bool(await db.blocked_users.find_one({"user_id": user_id}))
+
+
+async def count_blocked_users() -> int:
+    db = get_db()
+    return await db.blocked_users.count_documents({})
+
+
+# ── Global group block ────────────────────────────────────────────────────────
+
+async def block_group(chat_id: int, title: str = "") -> None:
+    db = get_db()
+    await db.blocked_groups.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"chat_id": chat_id, "title": title or str(chat_id)}},
+        upsert=True,
+    )
+
+
+async def unblock_group(chat_id: int) -> bool:
+    db = get_db()
+    result = await db.blocked_groups.delete_one({"chat_id": chat_id})
+    return result.deleted_count > 0
+
+
+async def is_group_blocked(chat_id: int) -> bool:
+    db = get_db()
+    return bool(await db.blocked_groups.find_one({"chat_id": chat_id}))
+
+
+async def count_blocked_groups() -> int:
+    db = get_db()
+    return await db.blocked_groups.count_documents({})
