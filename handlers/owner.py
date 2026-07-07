@@ -54,6 +54,7 @@ _POST_UD_KEYS = (
     "post_text", "post_buttons", "post_btn_name",
     "post_dur_key", "post_dur_secs", "post_dur_label",
     "post_target_chat", "post_target_title",
+    "post_msg_cleanup",   # list[(chat_id, msg_id)] — bulk-deleted on exit
 )
 
 
@@ -407,15 +408,16 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 9. /post — multi-button announcement with timer + confirm
 #
-#   Step 1  → text
-#   Step 2+ → button loop: NAME → URL (repeat up to _MAX_BUTTONS; /done to exit)
-#   Step N  → duration inline keyboard
-#   Step N+1→ confirm keyboard → sends post + schedules auto-delete via job_queue
-#   /cancel aborts at any step.
+#   Step 1   → text
+#   Step 2+  → button loop: NAME → URL (up to _MAX_BUTTONS)
+#              [✅ Done] inline button exits the loop early (≥1 button collected)
+#   Step N   → duration inline keyboard
+#   Step N+1 → confirm keyboard → sends post + schedules auto-delete
+#   All conversation messages are bulk-deleted when the flow ends.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _url_from_input(raw: str) -> str:
-    """Normalise @username / bare username / t.me/... to a full URL; leave https:// as-is."""
+    """Normalise @username / bare username / t.me/... → full URL; preserve https://."""
     raw   = raw.strip()
     lower = raw.lower()
     if lower.startswith("http://") or lower.startswith("https://"):
@@ -430,13 +432,37 @@ def _clear_post_data(context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data.pop(k, None)
 
 
+def _track_msgs(context: ContextTypes.DEFAULT_TYPE, *msgs) -> None:
+    """Register messages for bulk deletion when the /post flow ends."""
+    cleanup: list = context.user_data.setdefault("post_msg_cleanup", [])
+    for m in msgs:
+        if m is not None:
+            cleanup.append((m.chat_id, m.message_id))
+
+
+async def _cleanup_conversation(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Delete every tracked /post conversation message immediately."""
+    for chat_id, msg_id in context.user_data.pop("post_msg_cleanup", []):
+        try:
+            await context.bot.delete_message(chat_id, msg_id)
+        except Exception:
+            pass   # already deleted or no permission — silently skip
+
+
 async def _auto_delete_post(context: ContextTypes.DEFAULT_TYPE) -> None:
     """PTB job_queue callback — deletes the timed post after its duration expires."""
     data = context.job.data
     try:
         await context.bot.delete_message(data["chat_id"], data["message_id"])
     except Exception:
-        pass   # already deleted or bot lost permission
+        pass
+
+
+def _done_keyboard() -> InlineKeyboardMarkup:
+    """[✅ Done] button shown on every 'add another button' prompt."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Done — Finish Adding Buttons", callback_data="post_done"),
+    ]])
 
 
 # ── Step 1: /post entry ───────────────────────────────────────────────────────
@@ -447,6 +473,7 @@ async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     chat = update.effective_chat
     _clear_post_data(context)
     context.user_data["post_buttons"]      = []
+    context.user_data["post_msg_cleanup"]  = []
     context.user_data["post_target_chat"]  = chat.id
     context.user_data["post_target_title"] = chat.title or "Private Chat"
 
@@ -456,12 +483,11 @@ async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         f"{italic('SEND /CANCEL TO STOP AT ANY TIME.')}",
         parse_mode=ParseMode.HTML,
     )
-    asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
-    asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+    _track_msgs(context, msg, prompt)
     return _POST_TEXT
 
 
-# ── Step 2: receive post text, ask for Button 1 name ─────────────────────────
+# ── Step 2: receive text → ask Button 1 name ─────────────────────────────────
 
 async def _post_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
@@ -473,23 +499,22 @@ async def _post_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"{italic(f'YOU CAN ADD 1 TO {_MAX_BUTTONS} BUTTONS IN TOTAL.')}",
         parse_mode=ParseMode.HTML,
     )
-    asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
-    asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+    _track_msgs(context, msg, prompt)
     return _POST_BTN_NAME
 
 
-# ── Step 3a: receive button name, ask for URL ─────────────────────────────────
+# ── Step 3a: receive button name → ask URL ────────────────────────────────────
 
 async def _post_got_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg      = update.effective_message
     btn_name = (msg.text or "").strip()
+
     if not btn_name:
         prompt = await msg.reply_text(
             error("Button label cannot be empty. Try again."),
             parse_mode=ParseMode.HTML,
         )
-        asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
-        asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+        _track_msgs(context, msg, prompt)
         return _POST_BTN_NAME
 
     context.user_data["post_btn_name"] = btn_name
@@ -501,12 +526,11 @@ async def _post_got_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"{italic('E.G. HTTPS://T.ME/ADMIN OR @ADMIN')}",
         parse_mode=ParseMode.HTML,
     )
-    asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
-    asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+    _track_msgs(context, msg, prompt)
     return _POST_BTN_URL
 
 
-# ── Step 3b: receive URL, save button, ask for next or proceed ────────────────
+# ── Step 3b: receive URL → save button → next or duration ────────────────────
 
 async def _post_got_btn_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg     = update.effective_message
@@ -517,68 +541,66 @@ async def _post_got_btn_url(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             error("URL cannot be empty. Try again or /cancel."),
             parse_mode=ParseMode.HTML,
         )
-        asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
-        asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
-        return _POST_BTN_URL   # stay — let owner retry
+        _track_msgs(context, msg, prompt)
+        return _POST_BTN_URL
 
     url      = _url_from_input(raw_url)
     btn_name = context.user_data.get("post_btn_name", "Button")
     buttons  = context.user_data.setdefault("post_buttons", [])
     buttons.append([InlineKeyboardButton(btn_name, url=url)])
     btn_count = len(buttons)
-
-    asyncio.create_task(_delete_later(msg, AUTO_DELETE_DELAY))
+    _track_msgs(context, msg)
 
     if btn_count >= _MAX_BUTTONS:
-        # Maximum reached — skip to duration
+        # Hard limit reached — proceed directly to duration
         prompt = await msg.reply_text(
-            f"{bold(f'✅ BUTTON {btn_count} ADDED')}  "
+            f"{bold(f'✅ BUTTON {btn_count} ADDED')}\n"
             f"{italic(f'({_MAX_BUTTONS}/{_MAX_BUTTONS} — MAXIMUM REACHED)')}",
             parse_mode=ParseMode.HTML,
         )
-        asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+        _track_msgs(context, prompt)
         return await _ask_duration(msg, context)
 
-    # Ask for next button (with /done option)
+    # Prompt for next button — include [Done] inline button
     next_num = btn_count + 1
     prompt = await msg.reply_text(
         f"{bold(f'✅ BUTTON {btn_count} ADDED')}\n\n"
         f"{bold(f'🔘 BUTTON {next_num} — NAME')}\n\n"
-        f"TYPE THE BUTTON LABEL (E.G. CONTACT ADMIN)\n\n"
-        f"{italic(f'MAX {_MAX_BUTTONS} BUTTONS — SEND /DONE TO FINISH.')}",
+        f"TYPE THE NEXT BUTTON LABEL\n"
+        f"{italic(f'MAX {_MAX_BUTTONS} BUTTONS TOTAL')}",
+        reply_markup=_done_keyboard(),
         parse_mode=ParseMode.HTML,
     )
-    asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+    _track_msgs(context, prompt)
     return _POST_BTN_NAME
 
 
-# ── /done — finish button collection early ────────────────────────────────────
+# ── [Done] inline button — finish button collection early ─────────────────────
 
 async def _post_done_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    msg     = update.effective_message
-    buttons = context.user_data.get("post_buttons", [])
-    asyncio.create_task(_delete_later(msg, AUTO_DELETE_DELAY))
-    if not buttons:
-        prompt = await msg.reply_text(
-            error("Add at least 1 button before /done."),
-            parse_mode=ParseMode.HTML,
-        )
-        asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
-        return _POST_BTN_NAME   # stay
-    return await _ask_duration(msg, context)
+    """Callback from the [✅ Done] button shown on 'add another button' prompts."""
+    query = update.callback_query
+    await query.answer()
+    # Remove the inline keyboard from the prompt so it looks clean
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    return await _ask_duration(query.message, context)
 
 
-# ── Duration keyboard ─────────────────────────────────────────────────────────
+# ── Duration keyboard (not tracked — it becomes the confirm/success message) ──
 
 async def _ask_duration(msg, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Send the duration keyboard and advance to _POST_DURATION."""
-    prompt = await msg.reply_text(
+    """Send the duration keyboard. This message is deliberately NOT added to the
+    cleanup list — it is edited through confirm→success and deleted separately
+    with a short delay so the owner can read the result."""
+    await msg.reply_text(
         f"{bold('⏱ HOW LONG TO KEEP THIS POST?')}\n\n"
         f"SELECT A DURATION BELOW.",
         reply_markup=_duration_keyboard(),
         parse_mode=ParseMode.HTML,
     )
-    asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
     return _POST_DURATION
 
 
@@ -588,7 +610,7 @@ async def _post_got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     key = query.data.split(":", 1)[1]   # "post_dur:5m" → "5m"
     if key not in _DURATIONS:
-        return _POST_DURATION            # unknown key — ignore
+        return _POST_DURATION            # unknown callback — ignore
 
     label, seconds = _DURATIONS[key]
     context.user_data["post_dur_key"]   = key
@@ -611,7 +633,7 @@ async def _post_got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return _POST_CONFIRM
 
 
-# ── Confirm / cancel from confirm screen ─────────────────────────────────────
+# ── Confirm ───────────────────────────────────────────────────────────────────
 
 async def _post_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -628,10 +650,10 @@ async def _post_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     try:
         sent = await context.bot.send_message(
             target_chat,
-            post_text,        # plain — no parse_mode so <>&  are safe
+            post_text,        # plain text — no parse_mode, so <>&  are safe
             reply_markup=markup,
         )
-        # Schedule auto-delete — prefer PTB job_queue; fall back to asyncio task
+        # Schedule auto-delete of the post — prefer PTB job_queue, fall back to asyncio
         if context.job_queue is not None:
             context.job_queue.run_once(
                 _auto_delete_post,
@@ -640,10 +662,7 @@ async def _post_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 name=f"post_del_{target_chat}_{sent.message_id}",
             )
         else:
-            # Fallback: asyncio task (won't survive a bot restart for long durations)
-            _chat_id = target_chat
-            _msg_id  = sent.message_id
-            _bot     = context.bot
+            _chat_id, _msg_id, _bot = target_chat, sent.message_id, context.bot
 
             async def _fallback_delete() -> None:
                 await asyncio.sleep(dur_secs)
@@ -654,38 +673,53 @@ async def _post_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
             asyncio.create_task(_fallback_delete())
 
+        # Show success on the confirm message
         await query.edit_message_text(
             f"{bold('✅ POST SENT!')}\n"
             f"📍 GROUP: {escape(group_title)}\n"
             f"⏱ EXPIRES IN: {dur_label}",
             parse_mode=ParseMode.HTML,
         )
-        asyncio.create_task(_delete_later(query.message, AUTO_DELETE_DELAY))
+        # Wipe all conversation messages immediately, then remove the success notice
+        await _cleanup_conversation(context)
+        asyncio.create_task(_delete_later(query.message, 8))   # 8-second grace period
+
     except Exception as exc:
         await query.edit_message_text(
-            error(escape(str(exc))),
-            parse_mode=ParseMode.HTML,
+            error(escape(str(exc))), parse_mode=ParseMode.HTML
         )
+        await _cleanup_conversation(context)
 
     _clear_post_data(context)
     return ConversationHandler.END
 
+
+# ── Cancel from the confirm screen ───────────────────────────────────────────
 
 async def _post_cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel pressed on the confirm screen."""
     query = update.callback_query
     await query.answer()
+    await _cleanup_conversation(context)
     _clear_post_data(context)
     await query.edit_message_text(error("Post cancelled."), parse_mode=ParseMode.HTML)
+    asyncio.create_task(_delete_later(query.message, 5))
     return ConversationHandler.END
 
 
-# ── /cancel (fallback at any text step) ───────────────────────────────────────
+# ── /cancel fallback (any text step) ─────────────────────────────────────────
 
 async def _post_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
+    _track_msgs(context, msg)          # wipe the /cancel command with everything else
+    await _cleanup_conversation(context)
     _clear_post_data(context)
-    await send_and_delete(msg, error("Post cancelled."), parse_mode=ParseMode.HTML)
+    # Send WITHOUT replying — msg was just deleted, so reply_to would 404 in groups
+    reply = await context.bot.send_message(
+        msg.chat_id,
+        error("Post cancelled."),
+        parse_mode=ParseMode.HTML,
+    )
+    asyncio.create_task(_delete_later(reply, 5))
     return ConversationHandler.END
 
 
@@ -703,7 +737,7 @@ def register(app) -> None:
     app.add_handler(CommandHandler("unblockgroup", unblockgroup))
     app.add_handler(CommandHandler("broadcast",    broadcast))
 
-    # /post — multi-button + duration timer + confirm step
+    # /post — multi-button + duration timer + confirm + auto-cleanup
     app.add_handler(
         ConversationHandler(
             entry_points=[CommandHandler("post", _post_start)],
@@ -712,8 +746,8 @@ def register(app) -> None:
                     MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_text),
                 ],
                 _POST_BTN_NAME: [
-                    # /done ends the button loop early (≥1 button already collected)
-                    CommandHandler("done", _post_done_buttons),
+                    # [✅ Done] inline button — no typing needed to finish loop
+                    CallbackQueryHandler(_post_done_buttons, pattern=r"^post_done$"),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_btn_name),
                 ],
                 _POST_BTN_URL: [
@@ -728,9 +762,8 @@ def register(app) -> None:
                 ],
             },
             fallbacks=[CommandHandler("cancel", _post_cancel)],
-            # per_chat=True + per_user=True: conversation is scoped to the
-            # (chat, user) pair so the owner's /post in group A never bleeds
-            # into group B, and callback queries are matched to the right chat.
+            # per_chat=True + per_user=True: scoped to (chat, user) pair —
+            # owner's /post in group A cannot bleed into group B.
             per_chat=True,
             per_user=True,
         )
