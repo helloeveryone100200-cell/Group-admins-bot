@@ -10,10 +10,11 @@ Build order (one command verified before the next):
   6.  /blockgroup  — block a group and leave it
   7.  /unblockgroup — unblock a group
   8.  /broadcast   — all | group <id> | user <id>
-  9.  /post        — compose announcement with inline buttons (conversation)
+  9.  /post        — compose announcement with one inline button (3-step conversation)
 """
 from __future__ import annotations
 import asyncio
+from html import escape
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -33,8 +34,8 @@ from helpers.utils import send_and_delete, AUTO_DELETE_DELAY, _delete_later
 
 _FLOOD_DELAY = 0.05          # seconds between bulk sends (Telegram flood control)
 
-# ConversationHandler states
-_POST_TEXT, _POST_BUTTONS, _POST_TARGET = range(3)
+# /post ConversationHandler states
+_POST_TEXT, _POST_BTN_NAME, _POST_BTN_URL = range(3)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -358,28 +359,50 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 9. /post — compose announcement with inline buttons (3-step conversation)
+# 9. /post — 3-step conversation
 #
-#   Step 1: owner sends the announcement text
-#   Step 2: owner sends button definitions  (Label | URL, one per line)
-#           or /skip to omit buttons
-#   Step 3: owner specifies target: all | group <id> | user <id>
-#   /cancel at any step aborts.
+#   Step 1  → owner types post message text
+#   Step 2  → owner types button label  (e.g. "Contact Admin")
+#   Step 3  → owner types button URL or @username
+#             Bot sends the post to the current chat and ends.
+#   /cancel aborts at any step.
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _url_from_input(raw: str) -> str:
+    """Normalise @username or bare username to a t.me URL; leave full URLs as-is.
+
+    Handles:
+      @username          → https://t.me/username
+      username           → https://t.me/username
+      t.me/username      → https://t.me/username
+      https://...        → unchanged  (case-insensitive scheme check)
+      http://...         → unchanged
+    """
+    raw = raw.strip()
+    lower = raw.lower()
+    if lower.startswith("http://") or lower.startswith("https://"):
+        return raw                        # already a full URL — preserve as-is
+    if lower.startswith("t.me/"):
+        return f"https://{raw}"           # t.me/... → https://t.me/...
+    # @username  or  bare username
+    username = raw.lstrip("@")
+    return f"https://t.me/{username}"
+
 
 @owner_only
 async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
     # Clear any leftover state from a previous incomplete session
-    context.user_data.pop("post_text", None)
-    context.user_data.pop("post_buttons", None)
+    context.user_data.pop("post_text",     None)
+    context.user_data.pop("post_btn_name", None)
+
     prompt = await msg.reply_text(
-        f"{header('POST ANNOUNCEMENT')}\n\n"
-        f"📝 {bold('STEP 1 / 3')} — Send the announcement text.\n\n"
-        f"{italic('Type /cancel to abort.')}",
+        f"{bold('📝 CREATE A POST')}\n\n"
+        f"TYPE YOUR POST MESSAGE BELOW.\n\n"
+        f"{italic('SEND /CANCEL TO STOP AT ANY TIME.')}",
         parse_mode=ParseMode.HTML,
     )
-    asyncio.create_task(_delete_later(msg, AUTO_DELETE_DELAY))
+    asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
     asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
     return _POST_TEXT
 
@@ -387,146 +410,83 @@ async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def _post_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
     context.user_data["post_text"] = msg.text or ""
+
     prompt = await msg.reply_text(
-        f"{header('POST ANNOUNCEMENT')}\n\n"
-        f"🔘 {bold('STEP 2 / 3')} — Add inline buttons (optional).\n\n"
-        f"Format one button per line:\n"
-        f"{mono('Button Label | https://example.com')}\n\n"
-        f"{italic('Send /skip to add no buttons.')}",
+        f"{bold('🔘 BUTTON 1 — NAME')}\n\n"
+        f"TYPE THE BUTTON LABEL (E.G. CONTACT ADMIN)",
         parse_mode=ParseMode.HTML,
     )
-    asyncio.create_task(_delete_later(msg, AUTO_DELETE_DELAY))
+    asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
     asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
-    return _POST_BUTTONS
+    return _POST_BTN_NAME
 
 
-def _target_prompt() -> str:
-    return (
-        f"{header('POST ANNOUNCEMENT')}\n\n"
-        f"📡 {bold('STEP 3 / 3')} — Where to send?\n\n"
-        f"  {mono('all')}             → every registered group\n"
-        f"  {mono('group <id>')}     → one specific group\n"
-        f"  {mono('user <id>')}      → one user (DM)\n\n"
-        f"{italic('Or /cancel to abort.')}"
-    )
-
-
-async def _post_skip_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def _post_got_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
-    context.user_data["post_buttons"] = []
-    prompt = await msg.reply_text(_target_prompt(), parse_mode=ParseMode.HTML)
-    asyncio.create_task(_delete_later(msg, AUTO_DELETE_DELAY))
+    context.user_data["post_btn_name"] = (msg.text or "").strip()
+
+    prompt = await msg.reply_text(
+        f"{bold('🔗 BUTTON 1 — URL')}\n\n"
+        f"ENTER A URL OR @USERNAME\n"
+        f"{italic('E.G. HTTPS://T.ME/ADMIN OR @ADMIN')}",
+        parse_mode=ParseMode.HTML,
+    )
+    asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
     asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
-    return _POST_TARGET
+    return _POST_BTN_URL
 
 
-async def _post_got_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    msg     = update.effective_message
-    buttons: list[list[InlineKeyboardButton]] = []
-    if msg.text:
-        for line in msg.text.strip().splitlines():
-            if "|" in line:
-                label, _, url = line.partition("|")
-                label = label.strip()
-                url   = url.strip()
-                # Accept any non-empty URL; Telegram validates on send
-                if label and url:
-                    buttons.append([InlineKeyboardButton(label, url=url)])
-    context.user_data["post_buttons"] = buttons
-    prompt = await msg.reply_text(_target_prompt(), parse_mode=ParseMode.HTML)
-    asyncio.create_task(_delete_later(msg, AUTO_DELETE_DELAY))
-    asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
-    return _POST_TARGET
-
-
-async def _post_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def _post_got_btn_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg       = update.effective_message
-    raw       = (msg.text or "").strip()
-    parts     = raw.split()
+    chat      = update.effective_chat
+    raw_url   = (msg.text or "").strip()
     post_text = context.user_data.get("post_text", "")
-    btn_rows  = context.user_data.get("post_buttons", [])
-    markup    = InlineKeyboardMarkup(btn_rows) if btn_rows else None
-    _db       = db.get_db()
+    btn_name  = context.user_data.get("post_btn_name", "Button")
 
-    if not parts:
-        await send_and_delete(
-            msg,
-            error("Specify target: all | group &lt;id&gt; | user &lt;id&gt;"),
+    # Validate we have something
+    if not raw_url:
+        prompt = await msg.reply_text(
+            error("URL cannot be empty. Try again or /cancel."),
             parse_mode=ParseMode.HTML,
         )
-        return _POST_TARGET  # stay in this state; let owner retry
+        asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
+        asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+        return _POST_BTN_URL   # stay — let owner retry
 
-    mode = parts[0].lower()
+    url    = _url_from_input(raw_url)
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_name, url=url)]])
 
-    if mode == "all":
-        sent = failed = 0
-        async for doc in _db.settings.find({}, {"chat_id": 1}):
-            try:
-                await context.bot.send_message(
-                    doc["chat_id"], post_text,
-                    parse_mode=ParseMode.HTML, reply_markup=markup,
-                )
-                sent += 1
-            except Exception:
-                failed += 1
-            await asyncio.sleep(_FLOOD_DELAY)
+    # Send the post to the current chat (group where /post was called)
+    group_title = chat.title or "this chat"
+    try:
+        await context.bot.send_message(
+            chat.id,
+            post_text,          # plain text — no parse_mode so <>&  are safe
+            reply_markup=markup,
+        )
         await send_and_delete(
             msg,
-            success(
-                f"Post sent.\n"
-                f"{info_line('Sent', str(sent))}\n"
-                f"{info_line('Failed', str(failed))}"
-            ),
+            f"{bold('✅ POST SENT!')}\n"
+            f"📍 GROUP: {escape(group_title)}",
             parse_mode=ParseMode.HTML,
         )
+    except Exception as exc:
+        await send_and_delete(msg, error(escape(str(exc))), parse_mode=ParseMode.HTML)
 
-    elif mode == "group" and len(parts) >= 2 and parts[1].lstrip("-").isdigit():
-        cid = int(parts[1])
-        try:
-            await context.bot.send_message(
-                cid, post_text, parse_mode=ParseMode.HTML, reply_markup=markup
-            )
-            await send_and_delete(
-                msg,
-                success(f"Post sent to group {mono(str(cid))}."),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as e:
-            await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
-
-    elif mode == "user" and len(parts) >= 2 and parts[1].lstrip("-").isdigit():
-        uid = int(parts[1])
-        try:
-            await context.bot.send_message(
-                uid, post_text, parse_mode=ParseMode.HTML, reply_markup=markup
-            )
-            await send_and_delete(
-                msg,
-                success(f"Post sent to user {mono(str(uid))}."),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as e:
-            await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
-
-    else:
-        await send_and_delete(
-            msg,
-            error("Invalid target. Use: all | group &lt;id&gt; | user &lt;id&gt;"),
-            parse_mode=ParseMode.HTML,
-        )
-        return _POST_TARGET  # stay — let owner correct the input
-
-    # Success — clean up and end conversation
-    context.user_data.pop("post_text", None)
-    context.user_data.pop("post_buttons", None)
+    context.user_data.pop("post_text",     None)
+    context.user_data.pop("post_btn_name", None)
     return ConversationHandler.END
 
 
 async def _post_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
-    context.user_data.pop("post_text", None)
-    context.user_data.pop("post_buttons", None)
-    await send_and_delete(msg, error("Post cancelled."), parse_mode=ParseMode.HTML)
+    context.user_data.pop("post_text",     None)
+    context.user_data.pop("post_btn_name", None)
+    await send_and_delete(
+        msg,
+        error("Post cancelled."),
+        parse_mode=ParseMode.HTML,
+    )
     return ConversationHandler.END
 
 
@@ -544,28 +504,24 @@ def register(app) -> None:
     app.add_handler(CommandHandler("unblockgroup", unblockgroup))
     app.add_handler(CommandHandler("broadcast",    broadcast))
 
-    # /post — 3-step ConversationHandler
+    # /post — 3-step conversation: text → button name → button URL → send
     app.add_handler(
         ConversationHandler(
             entry_points=[CommandHandler("post", _post_start)],
             states={
                 _POST_TEXT: [
-                    MessageHandler(
-                        filters.TEXT & ~filters.COMMAND, _post_got_text
-                    ),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_text),
                 ],
-                _POST_BUTTONS: [
-                    CommandHandler("skip", _post_skip_buttons),
-                    MessageHandler(
-                        filters.TEXT & ~filters.COMMAND, _post_got_buttons
-                    ),
+                _POST_BTN_NAME: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_btn_name),
                 ],
-                _POST_TARGET: [
-                    MessageHandler(
-                        filters.TEXT & ~filters.COMMAND, _post_send
-                    ),
+                _POST_BTN_URL: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_btn_url),
                 ],
             },
             fallbacks=[CommandHandler("cancel", _post_cancel)],
+            # Allow conversation to run in groups (per user, not per chat)
+            per_chat=False,
+            per_user=True,
         )
     )
