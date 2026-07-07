@@ -10,7 +10,7 @@ Build order (one command verified before the next):
   6.  /blockgroup  — block a group and leave it
   7.  /unblockgroup — unblock a group
   8.  /broadcast   — all | group <id> | user <id>
-  9.  /post        — compose announcement with one inline button (3-step conversation)
+  9.  /post        — up-to-5-button announcement + duration timer + confirm
 """
 from __future__ import annotations
 import asyncio
@@ -19,6 +19,7 @@ from html import escape
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
+    CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
     MessageHandler,
@@ -32,10 +33,55 @@ from helpers.decorators import owner_only
 from helpers.formatting import bold, mono, header, info_line, success, error, italic
 from helpers.utils import send_and_delete, AUTO_DELETE_DELAY, _delete_later
 
-_FLOOD_DELAY = 0.05          # seconds between bulk sends (Telegram flood control)
+_FLOOD_DELAY  = 0.05   # seconds between bulk sends (Telegram flood control)
+_MAX_BUTTONS  = 5      # maximum inline buttons per /post
 
 # /post ConversationHandler states
-_POST_TEXT, _POST_BTN_NAME, _POST_BTN_URL = range(3)
+_POST_TEXT, _POST_BTN_NAME, _POST_BTN_URL, _POST_DURATION, _POST_CONFIRM = range(5)
+
+# Duration options: key → (human label, seconds)
+_DURATIONS: dict[str, tuple[str, int]] = {
+    "5m":  ("5 Minutes",   5 * 60),
+    "15m": ("15 Minutes", 15 * 60),
+    "30m": ("30 Minutes", 30 * 60),
+    "1h":  ("1 Hour",     60 * 60),
+    "1d":  ("1 Day",      24 * 60 * 60),
+    "3d":  ("3 Days",  3 * 24 * 60 * 60),
+    "1w":  ("1 Week",  7 * 24 * 60 * 60),
+}
+
+_POST_UD_KEYS = (
+    "post_text", "post_buttons", "post_btn_name",
+    "post_dur_key", "post_dur_secs", "post_dur_label",
+    "post_target_chat", "post_target_title",
+)
+
+
+def _duration_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("5 Minutes",  callback_data="post_dur:5m"),
+            InlineKeyboardButton("15 Minutes", callback_data="post_dur:15m"),
+            InlineKeyboardButton("30 Minutes", callback_data="post_dur:30m"),
+        ],
+        [
+            InlineKeyboardButton("1 Hour", callback_data="post_dur:1h"),
+            InlineKeyboardButton("1 Day",  callback_data="post_dur:1d"),
+            InlineKeyboardButton("3 Days", callback_data="post_dur:3d"),
+        ],
+        [
+            InlineKeyboardButton("1 Week", callback_data="post_dur:1w"),
+        ],
+    ])
+
+
+def _confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ CONFIRM & SEND",  callback_data="post_confirm"),
+            InlineKeyboardButton("❌ CANCEL",           callback_data="post_cancel_confirm"),
+        ]
+    ])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -359,42 +405,50 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 9. /post — 3-step conversation
+# 9. /post — multi-button announcement with timer + confirm
 #
-#   Step 1  → owner types post message text
-#   Step 2  → owner types button label  (e.g. "Contact Admin")
-#   Step 3  → owner types button URL or @username
-#             Bot sends the post to the current chat and ends.
+#   Step 1  → text
+#   Step 2+ → button loop: NAME → URL (repeat up to _MAX_BUTTONS; /done to exit)
+#   Step N  → duration inline keyboard
+#   Step N+1→ confirm keyboard → sends post + schedules auto-delete via job_queue
 #   /cancel aborts at any step.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _url_from_input(raw: str) -> str:
-    """Normalise @username or bare username to a t.me URL; leave full URLs as-is.
-
-    Handles:
-      @username          → https://t.me/username
-      username           → https://t.me/username
-      t.me/username      → https://t.me/username
-      https://...        → unchanged  (case-insensitive scheme check)
-      http://...         → unchanged
-    """
-    raw = raw.strip()
+    """Normalise @username / bare username / t.me/... to a full URL; leave https:// as-is."""
+    raw   = raw.strip()
     lower = raw.lower()
     if lower.startswith("http://") or lower.startswith("https://"):
-        return raw                        # already a full URL — preserve as-is
+        return raw
     if lower.startswith("t.me/"):
-        return f"https://{raw}"           # t.me/... → https://t.me/...
-    # @username  or  bare username
-    username = raw.lstrip("@")
-    return f"https://t.me/{username}"
+        return f"https://{raw}"
+    return f"https://t.me/{raw.lstrip('@')}"
 
+
+def _clear_post_data(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for k in _POST_UD_KEYS:
+        context.user_data.pop(k, None)
+
+
+async def _auto_delete_post(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB job_queue callback — deletes the timed post after its duration expires."""
+    data = context.job.data
+    try:
+        await context.bot.delete_message(data["chat_id"], data["message_id"])
+    except Exception:
+        pass   # already deleted or bot lost permission
+
+
+# ── Step 1: /post entry ───────────────────────────────────────────────────────
 
 @owner_only
 async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    msg = update.effective_message
-    # Clear any leftover state from a previous incomplete session
-    context.user_data.pop("post_text",     None)
-    context.user_data.pop("post_btn_name", None)
+    msg  = update.effective_message
+    chat = update.effective_chat
+    _clear_post_data(context)
+    context.user_data["post_buttons"]      = []
+    context.user_data["post_target_chat"]  = chat.id
+    context.user_data["post_target_title"] = chat.title or "Private Chat"
 
     prompt = await msg.reply_text(
         f"{bold('📝 CREATE A POST')}\n\n"
@@ -407,13 +461,16 @@ async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return _POST_TEXT
 
 
+# ── Step 2: receive post text, ask for Button 1 name ─────────────────────────
+
 async def _post_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
     context.user_data["post_text"] = msg.text or ""
 
     prompt = await msg.reply_text(
         f"{bold('🔘 BUTTON 1 — NAME')}\n\n"
-        f"TYPE THE BUTTON LABEL (E.G. CONTACT ADMIN)",
+        f"TYPE THE BUTTON LABEL (E.G. CONTACT ADMIN)\n\n"
+        f"{italic(f'YOU CAN ADD 1 TO {_MAX_BUTTONS} BUTTONS IN TOTAL.')}",
         parse_mode=ParseMode.HTML,
     )
     asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
@@ -421,12 +478,25 @@ async def _post_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return _POST_BTN_NAME
 
 
+# ── Step 3a: receive button name, ask for URL ─────────────────────────────────
+
 async def _post_got_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    msg = update.effective_message
-    context.user_data["post_btn_name"] = (msg.text or "").strip()
+    msg      = update.effective_message
+    btn_name = (msg.text or "").strip()
+    if not btn_name:
+        prompt = await msg.reply_text(
+            error("Button label cannot be empty. Try again."),
+            parse_mode=ParseMode.HTML,
+        )
+        asyncio.create_task(_delete_later(msg,    AUTO_DELETE_DELAY))
+        asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+        return _POST_BTN_NAME
+
+    context.user_data["post_btn_name"] = btn_name
+    btn_num = len(context.user_data.get("post_buttons", [])) + 1
 
     prompt = await msg.reply_text(
-        f"{bold('🔗 BUTTON 1 — URL')}\n\n"
+        f"{bold(f'🔗 BUTTON {btn_num} — URL')}\n\n"
         f"ENTER A URL OR @USERNAME\n"
         f"{italic('E.G. HTTPS://T.ME/ADMIN OR @ADMIN')}",
         parse_mode=ParseMode.HTML,
@@ -436,14 +506,12 @@ async def _post_got_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return _POST_BTN_URL
 
 
-async def _post_got_btn_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    msg       = update.effective_message
-    chat      = update.effective_chat
-    raw_url   = (msg.text or "").strip()
-    post_text = context.user_data.get("post_text", "")
-    btn_name  = context.user_data.get("post_btn_name", "Button")
+# ── Step 3b: receive URL, save button, ask for next or proceed ────────────────
 
-    # Validate we have something
+async def _post_got_btn_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    msg     = update.effective_message
+    raw_url = (msg.text or "").strip()
+
     if not raw_url:
         prompt = await msg.reply_text(
             error("URL cannot be empty. Try again or /cancel."),
@@ -453,40 +521,171 @@ async def _post_got_btn_url(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
         return _POST_BTN_URL   # stay — let owner retry
 
-    url    = _url_from_input(raw_url)
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_name, url=url)]])
+    url      = _url_from_input(raw_url)
+    btn_name = context.user_data.get("post_btn_name", "Button")
+    buttons  = context.user_data.setdefault("post_buttons", [])
+    buttons.append([InlineKeyboardButton(btn_name, url=url)])
+    btn_count = len(buttons)
 
-    # Send the post to the current chat (group where /post was called)
-    group_title = chat.title or "this chat"
-    try:
-        await context.bot.send_message(
-            chat.id,
-            post_text,          # plain text — no parse_mode so <>&  are safe
-            reply_markup=markup,
-        )
-        await send_and_delete(
-            msg,
-            f"{bold('✅ POST SENT!')}\n"
-            f"📍 GROUP: {escape(group_title)}",
+    asyncio.create_task(_delete_later(msg, AUTO_DELETE_DELAY))
+
+    if btn_count >= _MAX_BUTTONS:
+        # Maximum reached — skip to duration
+        prompt = await msg.reply_text(
+            f"{bold(f'✅ BUTTON {btn_count} ADDED')}  "
+            f"{italic(f'({_MAX_BUTTONS}/{_MAX_BUTTONS} — MAXIMUM REACHED)')}",
             parse_mode=ParseMode.HTML,
         )
-    except Exception as exc:
-        await send_and_delete(msg, error(escape(str(exc))), parse_mode=ParseMode.HTML)
+        asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+        return await _ask_duration(msg, context)
 
-    context.user_data.pop("post_text",     None)
-    context.user_data.pop("post_btn_name", None)
+    # Ask for next button (with /done option)
+    next_num = btn_count + 1
+    prompt = await msg.reply_text(
+        f"{bold(f'✅ BUTTON {btn_count} ADDED')}\n\n"
+        f"{bold(f'🔘 BUTTON {next_num} — NAME')}\n\n"
+        f"TYPE THE BUTTON LABEL (E.G. CONTACT ADMIN)\n\n"
+        f"{italic(f'MAX {_MAX_BUTTONS} BUTTONS — SEND /DONE TO FINISH.')}",
+        parse_mode=ParseMode.HTML,
+    )
+    asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+    return _POST_BTN_NAME
+
+
+# ── /done — finish button collection early ────────────────────────────────────
+
+async def _post_done_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    msg     = update.effective_message
+    buttons = context.user_data.get("post_buttons", [])
+    asyncio.create_task(_delete_later(msg, AUTO_DELETE_DELAY))
+    if not buttons:
+        prompt = await msg.reply_text(
+            error("Add at least 1 button before /done."),
+            parse_mode=ParseMode.HTML,
+        )
+        asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+        return _POST_BTN_NAME   # stay
+    return await _ask_duration(msg, context)
+
+
+# ── Duration keyboard ─────────────────────────────────────────────────────────
+
+async def _ask_duration(msg, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Send the duration keyboard and advance to _POST_DURATION."""
+    prompt = await msg.reply_text(
+        f"{bold('⏱ HOW LONG TO KEEP THIS POST?')}\n\n"
+        f"SELECT A DURATION BELOW.",
+        reply_markup=_duration_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    asyncio.create_task(_delete_later(prompt, AUTO_DELETE_DELAY))
+    return _POST_DURATION
+
+
+async def _post_got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    key = query.data.split(":", 1)[1]   # "post_dur:5m" → "5m"
+    if key not in _DURATIONS:
+        return _POST_DURATION            # unknown key — ignore
+
+    label, seconds = _DURATIONS[key]
+    context.user_data["post_dur_key"]   = key
+    context.user_data["post_dur_secs"]  = seconds
+    context.user_data["post_dur_label"] = label
+
+    post_text = context.user_data.get("post_text", "")
+    btn_count = len(context.user_data.get("post_buttons", []))
+    preview   = escape(post_text[:80]) + ("…" if len(post_text) > 80 else "")
+
+    await query.edit_message_text(
+        f"{bold('📋 CONFIRM POST')}\n\n"
+        f"💬 {bold('Message:')} {preview}\n"
+        f"🔘 {bold('Buttons:')} {btn_count}\n"
+        f"⏱ {bold('Duration:')} {label}\n\n"
+        f"PRESS CONFIRM TO SEND.",
+        reply_markup=_confirm_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+    return _POST_CONFIRM
+
+
+# ── Confirm / cancel from confirm screen ─────────────────────────────────────
+
+async def _post_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    post_text   = context.user_data.get("post_text", "")
+    buttons     = context.user_data.get("post_buttons", [])
+    dur_secs    = context.user_data.get("post_dur_secs",  300)
+    dur_label   = context.user_data.get("post_dur_label", "5 Minutes")
+    target_chat = context.user_data.get("post_target_chat")
+    group_title = context.user_data.get("post_target_title", "this chat")
+    markup      = InlineKeyboardMarkup(buttons) if buttons else None
+
+    try:
+        sent = await context.bot.send_message(
+            target_chat,
+            post_text,        # plain — no parse_mode so <>&  are safe
+            reply_markup=markup,
+        )
+        # Schedule auto-delete — prefer PTB job_queue; fall back to asyncio task
+        if context.job_queue is not None:
+            context.job_queue.run_once(
+                _auto_delete_post,
+                when=dur_secs,
+                data={"chat_id": target_chat, "message_id": sent.message_id},
+                name=f"post_del_{target_chat}_{sent.message_id}",
+            )
+        else:
+            # Fallback: asyncio task (won't survive a bot restart for long durations)
+            _chat_id = target_chat
+            _msg_id  = sent.message_id
+            _bot     = context.bot
+
+            async def _fallback_delete() -> None:
+                await asyncio.sleep(dur_secs)
+                try:
+                    await _bot.delete_message(_chat_id, _msg_id)
+                except Exception:
+                    pass
+
+            asyncio.create_task(_fallback_delete())
+
+        await query.edit_message_text(
+            f"{bold('✅ POST SENT!')}\n"
+            f"📍 GROUP: {escape(group_title)}\n"
+            f"⏱ EXPIRES IN: {dur_label}",
+            parse_mode=ParseMode.HTML,
+        )
+        asyncio.create_task(_delete_later(query.message, AUTO_DELETE_DELAY))
+    except Exception as exc:
+        await query.edit_message_text(
+            error(escape(str(exc))),
+            parse_mode=ParseMode.HTML,
+        )
+
+    _clear_post_data(context)
     return ConversationHandler.END
 
 
+async def _post_cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel pressed on the confirm screen."""
+    query = update.callback_query
+    await query.answer()
+    _clear_post_data(context)
+    await query.edit_message_text(error("Post cancelled."), parse_mode=ParseMode.HTML)
+    return ConversationHandler.END
+
+
+# ── /cancel (fallback at any text step) ───────────────────────────────────────
+
 async def _post_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg = update.effective_message
-    context.user_data.pop("post_text",     None)
-    context.user_data.pop("post_btn_name", None)
-    await send_and_delete(
-        msg,
-        error("Post cancelled."),
-        parse_mode=ParseMode.HTML,
-    )
+    _clear_post_data(context)
+    await send_and_delete(msg, error("Post cancelled."), parse_mode=ParseMode.HTML)
     return ConversationHandler.END
 
 
@@ -504,7 +703,7 @@ def register(app) -> None:
     app.add_handler(CommandHandler("unblockgroup", unblockgroup))
     app.add_handler(CommandHandler("broadcast",    broadcast))
 
-    # /post — 3-step conversation: text → button name → button URL → send
+    # /post — multi-button + duration timer + confirm step
     app.add_handler(
         ConversationHandler(
             entry_points=[CommandHandler("post", _post_start)],
@@ -513,15 +712,26 @@ def register(app) -> None:
                     MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_text),
                 ],
                 _POST_BTN_NAME: [
+                    # /done ends the button loop early (≥1 button already collected)
+                    CommandHandler("done", _post_done_buttons),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_btn_name),
                 ],
                 _POST_BTN_URL: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_btn_url),
                 ],
+                _POST_DURATION: [
+                    CallbackQueryHandler(_post_got_duration, pattern=r"^post_dur:"),
+                ],
+                _POST_CONFIRM: [
+                    CallbackQueryHandler(_post_confirm,        pattern=r"^post_confirm$"),
+                    CallbackQueryHandler(_post_cancel_confirm, pattern=r"^post_cancel_confirm$"),
+                ],
             },
             fallbacks=[CommandHandler("cancel", _post_cancel)],
-            # Allow conversation to run in groups (per user, not per chat)
-            per_chat=False,
+            # per_chat=True + per_user=True: conversation is scoped to the
+            # (chat, user) pair so the owner's /post in group A never bleeds
+            # into group B, and callback queries are matched to the right chat.
+            per_chat=True,
             per_user=True,
         )
     )
