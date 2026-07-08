@@ -16,7 +16,10 @@ from __future__ import annotations
 import asyncio
 from html import escape
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ChatMemberAdministrator, ChatMemberOwner,
+)
 from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler,
@@ -54,8 +57,9 @@ _POST_UD_KEYS = (
     "post_text", "post_buttons", "post_btn_name",
     "post_dur_key", "post_dur_secs", "post_dur_label",
     "post_target_chat", "post_target_title",
-    "post_group_map",     # dict[chat_id → title] snapshotted when picker is shown
-    "post_msg_cleanup",   # list[(chat_id, msg_id)] — bulk-deleted on exit
+    "post_group_map",       # dict[chat_id → title] snapshotted when picker is shown
+    "post_allowed_groups",  # list[dict] snapshotted at menu entry (non-owner flow only)
+    "post_msg_cleanup",     # list[(chat_id, msg_id)] — bulk-deleted on exit
 )
 
 
@@ -489,6 +493,44 @@ async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return _POST_TEXT
 
 
+# ── Alt entry: "📢 Post to Group" button in /start & /help (all users) ────────
+
+async def _post_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point for the '📢 Post to Group' button. Open to every user, but the
+    group picker later in the flow is restricted to groups the tapping user
+    administers (bot owners still see every registered group)."""
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+
+    _clear_post_data(context)
+    context.user_data["post_buttons"]     = []
+    context.user_data["post_msg_cleanup"] = []
+
+    allowed = await _groups_manageable_by(user.id, context)
+    if not allowed:
+        await query.edit_message_text(
+            f"{bold('❌ NO ACCESSIBLE GROUPS')}\n\n"
+            f"YOU MUST BE AN ADMIN OR OWNER IN A GROUP THIS BOT MANAGES "
+            f"TO POST THERE.",
+            parse_mode=ParseMode.HTML,
+        )
+        return ConversationHandler.END
+
+    # Snapshot now so the later group-picker step doesn't need to re-derive
+    # admin status (and can't be widened by a permission change mid-flow).
+    context.user_data["post_allowed_groups"] = allowed
+
+    prompt = await query.edit_message_text(
+        f"{bold('📝 CREATE A POST')}\n\n"
+        f"TYPE YOUR POST MESSAGE BELOW.\n\n"
+        f"{italic('SEND /CANCEL TO STOP AT ANY TIME.')}",
+        parse_mode=ParseMode.HTML,
+    )
+    _track_msgs(context, prompt)
+    return _POST_TEXT
+
+
 # ── Step 2: receive text → ask Button 1 name ─────────────────────────────────
 
 async def _post_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -606,6 +648,29 @@ async def _ask_duration(msg, context: ContextTypes.DEFAULT_TYPE) -> int:
     return _POST_DURATION
 
 
+async def _groups_manageable_by(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
+    """Groups this user may post to: bot owners get every registered group;
+    everyone else only gets groups where they currently hold admin/creator
+    status (checked live against Telegram, not cached)."""
+    groups = await db.get_all_groups()
+    if not groups:
+        return []
+    if user_id in OWNER_IDS:
+        return groups
+
+    async def _check(g: dict):
+        try:
+            member = await context.bot.get_chat_member(g["chat_id"], user_id)
+        except Exception:
+            return None
+        if isinstance(member, (ChatMemberAdministrator, ChatMemberOwner)):
+            return g
+        return None
+
+    checked = await asyncio.gather(*(_check(g) for g in groups))
+    return [g for g in checked if g]
+
+
 def _build_group_keyboard(groups: list[dict]) -> InlineKeyboardMarkup:
     """Build a 2-column inline keyboard from a list of {chat_id, title} dicts."""
     buttons = [
@@ -632,15 +697,26 @@ async def _post_got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["post_dur_secs"]  = seconds
     context.user_data["post_dur_label"] = label
 
-    # Fetch groups the bot is a member of
-    groups = await db.get_all_groups()
+    # Fetch groups this user may post to. The /post command (owner-only) always
+    # sees every registered group. The "Post to Group" menu button restricts
+    # non-owners to groups snapshotted at entry (see _post_menu_entry).
+    if "post_allowed_groups" in context.user_data:
+        groups = context.user_data["post_allowed_groups"]
+    else:
+        groups = await db.get_all_groups()
     if not groups:
-        await query.edit_message_text(
-            f"{bold('❌ NO GROUPS FOUND')}\n\n"
-            f"BOT HAS NOT BEEN ADDED TO ANY GROUPS YET.\n\n"
-            f"{italic('ADD THE BOT TO A GROUP FIRST, THEN TRY /POST AGAIN.')}",
-            parse_mode=ParseMode.HTML,
-        )
+        if "post_allowed_groups" in context.user_data:
+            text = (
+                f"{bold('❌ NO ACCESSIBLE GROUPS')}\n\n"
+                f"YOU ARE NOT AN ADMIN IN ANY GROUP THIS BOT MANAGES."
+            )
+        else:
+            text = (
+                f"{bold('❌ NO GROUPS FOUND')}\n\n"
+                f"BOT HAS NOT BEEN ADDED TO ANY GROUPS YET.\n\n"
+                f"{italic('ADD THE BOT TO A GROUP FIRST, THEN TRY /POST AGAIN.')}"
+            )
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML)
         asyncio.create_task(_delete_later(query.message, 10))
         await _cleanup_conversation(context)
         _clear_post_data(context)
@@ -814,9 +890,15 @@ def register(app) -> None:
     app.add_handler(CommandHandler("broadcast",    broadcast))
 
     # /post — multi-button + duration timer + confirm + auto-cleanup
+    # Two entry points: the owner-only /post command (sees every group), and
+    # the "📢 Post to Group" menu button open to all users (sees only groups
+    # they administer).
     app.add_handler(
         ConversationHandler(
-            entry_points=[CommandHandler("post", _post_start)],
+            entry_points=[
+                CommandHandler("post", _post_start),
+                CallbackQueryHandler(_post_menu_entry, pattern=r"^menu_post_group$"),
+            ],
             states={
                 _POST_TEXT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, _post_got_text),

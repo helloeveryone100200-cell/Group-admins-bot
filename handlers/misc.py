@@ -149,6 +149,11 @@ def _main_keyboard(bot_username: str = "", is_owner: bool = False) -> InlineKeyb
             InlineKeyboardButton("🆔 𝗜𝗗 & 𝗜𝗡𝗙𝗢",     callback_data="help_id_info"),
         ],
     ]
+    # Post to Group — visible to everyone; the flow itself only offers groups
+    # the tapping user administers (or, for bot owners, every registered group).
+    rows.append([
+        InlineKeyboardButton("📢 𝗣𝗢𝗦𝗧 𝗧𝗢 𝗚𝗥𝗢𝗨𝗣", callback_data="menu_post_group"),
+    ])
     # Owner Panel row — visible only to bot owners
     if is_owner:
         rows.append([
