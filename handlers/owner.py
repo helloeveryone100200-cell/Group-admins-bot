@@ -668,23 +668,25 @@ async def _post_got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def _post_got_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Owner tapped a group button — validate, store target, show confirm screen."""
     query = update.callback_query
-    await query.answer()
 
     try:
         target_chat = int(query.data.split(":", 1)[1])
     except (IndexError, ValueError):
+        await query.answer()
         return _POST_GROUP   # malformed callback — ignore
 
     # Validate against the snapshot taken when the picker was rendered
     group_map: dict = context.user_data.get("post_group_map", {})
     if target_chat not in group_map:
-        # Stale selection — the group was removed from DB between picker render & tap
+        # Stale selection — the group was removed from DB between picker render & tap.
+        # Answer exactly once here (with the alert) instead of also answering above.
         await query.answer(
             "⚠️ That group is no longer available. Please select another.",
             show_alert=True,
         )
         return _POST_GROUP   # stay on picker; owner must tap a valid group
 
+    await query.answer()
     group_title = group_map[target_chat]
     context.user_data["post_target_chat"]  = target_chat
     context.user_data["post_target_title"] = group_title
