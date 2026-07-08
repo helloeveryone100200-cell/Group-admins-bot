@@ -37,7 +37,7 @@ _FLOOD_DELAY  = 0.05   # seconds between bulk sends (Telegram flood control)
 _MAX_BUTTONS  = 5      # maximum inline buttons per /post
 
 # /post ConversationHandler states
-_POST_TEXT, _POST_BTN_NAME, _POST_BTN_URL, _POST_DURATION, _POST_CONFIRM = range(5)
+_POST_TEXT, _POST_BTN_NAME, _POST_BTN_URL, _POST_DURATION, _POST_CONFIRM, _POST_GROUP = range(6)
 
 # Duration options: key → (human label, seconds)
 _DURATIONS: dict[str, tuple[str, int]] = {
@@ -54,6 +54,7 @@ _POST_UD_KEYS = (
     "post_text", "post_buttons", "post_btn_name",
     "post_dur_key", "post_dur_secs", "post_dur_label",
     "post_target_chat", "post_target_title",
+    "post_group_map",     # dict[chat_id → title] snapshotted when picker is shown
     "post_msg_cleanup",   # list[(chat_id, msg_id)] — bulk-deleted on exit
 )
 
@@ -406,15 +407,18 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 9. /post — multi-button announcement with timer + confirm
+# 9. /post — multi-button announcement with timer + group picker + confirm
 #
 #   Step 1   → text
 #   Step 2+  → button loop: NAME → URL (up to _MAX_BUTTONS)
 #              [✅ Done] inline button exits the loop early (≥1 button collected)
 #   Step N   → duration inline keyboard
-#   Step N+1 → confirm keyboard → sends post + schedules auto-delete
+#   Step N+1 → group picker (inline keyboard built from DB — warns if no groups)
+#   Step N+2 → confirm keyboard → sends post + schedules auto-delete
 #   All conversation messages are bulk-deleted when the flow ends.
 # ═══════════════════════════════════════════════════════════════════════════════
+
+_MAX_GROUPS_SHOWN = 20   # cap group picker to avoid oversized keyboards
 
 def _url_from_input(raw: str) -> str:
     """Normalise @username / bare username / t.me/... → full URL; preserve https://."""
@@ -472,10 +476,8 @@ async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     msg  = update.effective_message
     chat = update.effective_chat
     _clear_post_data(context)
-    context.user_data["post_buttons"]      = []
-    context.user_data["post_msg_cleanup"]  = []
-    context.user_data["post_target_chat"]  = chat.id
-    context.user_data["post_target_title"] = chat.title or "Private Chat"
+    context.user_data["post_buttons"]     = []
+    context.user_data["post_msg_cleanup"] = []
 
     prompt = await msg.reply_text(
         f"{bold('📝 CREATE A POST')}\n\n"
@@ -604,6 +606,19 @@ async def _ask_duration(msg, context: ContextTypes.DEFAULT_TYPE) -> int:
     return _POST_DURATION
 
 
+def _build_group_keyboard(groups: list[dict]) -> InlineKeyboardMarkup:
+    """Build a 2-column inline keyboard from a list of {chat_id, title} dicts."""
+    buttons = [
+        InlineKeyboardButton(
+            g.get("title", str(g["chat_id"]))[:32],
+            callback_data=f"post_group:{g['chat_id']}",
+        )
+        for g in groups[:_MAX_GROUPS_SHOWN]
+    ]
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(rows)
+
+
 async def _post_got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -617,15 +632,74 @@ async def _post_got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["post_dur_secs"]  = seconds
     context.user_data["post_dur_label"] = label
 
+    # Fetch groups the bot is a member of
+    groups = await db.get_all_groups()
+    if not groups:
+        await query.edit_message_text(
+            f"{bold('❌ NO GROUPS FOUND')}\n\n"
+            f"BOT HAS NOT BEEN ADDED TO ANY GROUPS YET.\n\n"
+            f"{italic('ADD THE BOT TO A GROUP FIRST, THEN TRY /POST AGAIN.')}",
+            parse_mode=ParseMode.HTML,
+        )
+        asyncio.create_task(_delete_later(query.message, 10))
+        await _cleanup_conversation(context)
+        _clear_post_data(context)
+        return ConversationHandler.END
+
+    # Snapshot the group map so _post_got_group can validate without a second DB hit
+    context.user_data["post_group_map"] = {
+        g["chat_id"]: g.get("title", str(g["chat_id"]))
+        for g in groups[:_MAX_GROUPS_SHOWN]
+    }
+
+    note = (
+        f"\n{italic(f'(SHOWING FIRST {_MAX_GROUPS_SHOWN} OF {len(groups)})')}"
+        if len(groups) > _MAX_GROUPS_SHOWN else ""
+    )
+    await query.edit_message_text(
+        f"{bold('📡 SELECT TARGET GROUP')}\n\n"
+        f"CHOOSE WHICH GROUP TO SEND THIS POST TO.{note}",
+        reply_markup=_build_group_keyboard(groups),
+        parse_mode=ParseMode.HTML,
+    )
+    return _POST_GROUP
+
+
+async def _post_got_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Owner tapped a group button — validate, store target, show confirm screen."""
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        target_chat = int(query.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        return _POST_GROUP   # malformed callback — ignore
+
+    # Validate against the snapshot taken when the picker was rendered
+    group_map: dict = context.user_data.get("post_group_map", {})
+    if target_chat not in group_map:
+        # Stale selection — the group was removed from DB between picker render & tap
+        await query.answer(
+            "⚠️ That group is no longer available. Please select another.",
+            show_alert=True,
+        )
+        return _POST_GROUP   # stay on picker; owner must tap a valid group
+
+    group_title = group_map[target_chat]
+    context.user_data["post_target_chat"]  = target_chat
+    context.user_data["post_target_title"] = group_title
+
     post_text = context.user_data.get("post_text", "")
     btn_count = len(context.user_data.get("post_buttons", []))
+    dur_label = context.user_data.get("post_dur_label", "?")
     preview   = escape(post_text[:80]) + ("…" if len(post_text) > 80 else "")
 
     await query.edit_message_text(
         f"{bold('📋 CONFIRM POST')}\n\n"
-        f"💬 {bold('Message:')} {preview}\n"
-        f"🔘 {bold('Buttons:')} {btn_count}\n"
-        f"⏱ {bold('Duration:')} {label}\n\n"
+        f"💬 {bold('Message:')}  {preview}\n"
+        f"🔘 {bold('Buttons:')}  {btn_count}\n"
+        f"⏱ {bold('Duration:')} {dur_label}\n"
+        f"📡 {bold('Group:')}    {escape(group_title)}\n\n"
         f"PRESS CONFIRM TO SEND.",
         reply_markup=_confirm_keyboard(),
         parse_mode=ParseMode.HTML,
@@ -755,6 +829,9 @@ def register(app) -> None:
                 ],
                 _POST_DURATION: [
                     CallbackQueryHandler(_post_got_duration, pattern=r"^post_dur:"),
+                ],
+                _POST_GROUP: [
+                    CallbackQueryHandler(_post_got_group, pattern=r"^post_group:"),
                 ],
                 _POST_CONFIRM: [
                     CallbackQueryHandler(_post_confirm,        pattern=r"^post_confirm$"),
