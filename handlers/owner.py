@@ -474,11 +474,42 @@ def _done_keyboard() -> InlineKeyboardMarkup:
 
 
 # ── Step 1: /post entry ───────────────────────────────────────────────────────
+# Open to every user (not owner-only): bot owners see every registered group;
+# regular users only see groups where they are currently an admin/creator —
+# the same rule enforced later at the group-picker step.
 
-@owner_only
 async def _post_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     msg  = update.effective_message
-    chat = update.effective_chat
+    user = update.effective_user
+
+    all_groups = await db.get_all_groups()
+    if not all_groups:
+        await send_and_delete(
+            msg,
+            error(
+                "❌ NO GROUPS FOUND\n\n"
+                "This bot has not been added to any group yet.\n"
+                "Add the bot to a group first, then try /post again."
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+        return ConversationHandler.END
+
+    if user.id not in OWNER_IDS:
+        allowed = await _groups_manageable_by(user.id, context)
+        if not allowed:
+            await send_and_delete(
+                msg,
+                error(
+                    "❌ NO ACCESSIBLE GROUPS\n\n"
+                    "You must be an admin or owner in a group this bot manages "
+                    "to post there."
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+            return ConversationHandler.END
+        context.user_data["post_allowed_groups"] = allowed
+
     _clear_post_data(context)
     context.user_data["post_buttons"]     = []
     context.user_data["post_msg_cleanup"] = []
@@ -890,9 +921,9 @@ def register(app) -> None:
     app.add_handler(CommandHandler("broadcast",    broadcast))
 
     # /post — multi-button + duration timer + confirm + auto-cleanup
-    # Two entry points: the owner-only /post command (sees every group), and
-    # the "📢 Post to Group" menu button open to all users (sees only groups
-    # they administer).
+    # Two entry points, both open to all users: the /post command and the
+    # "📢 Post to Group" menu button. Bot owners see every registered group;
+    # everyone else only sees groups they currently administer.
     app.add_handler(
         ConversationHandler(
             entry_points=[

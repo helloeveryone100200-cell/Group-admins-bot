@@ -304,6 +304,47 @@ async def register_chat(chat_id: int, title: str) -> None:
     )
 
 
+# ── Antispam / Stickerban / Nightmode ────────────────────────────────────────
+
+async def set_antispam(chat_id: int, enabled: bool) -> None:
+    db = get_db()
+    await db.settings.update_one(
+        {"chat_id": chat_id}, {"$set": {"antispam": enabled}}, upsert=True
+    )
+
+
+async def get_antispam(chat_id: int) -> bool:
+    db = get_db()
+    doc = await db.settings.find_one({"chat_id": chat_id})
+    return doc.get("antispam", False) if doc else False
+
+
+async def set_stickerban(chat_id: int, enabled: bool) -> None:
+    db = get_db()
+    await db.settings.update_one(
+        {"chat_id": chat_id}, {"$set": {"stickerban": enabled}}, upsert=True
+    )
+
+
+async def get_stickerban(chat_id: int) -> bool:
+    db = get_db()
+    doc = await db.settings.find_one({"chat_id": chat_id})
+    return doc.get("stickerban", False) if doc else False
+
+
+async def set_nightmode(chat_id: int, enabled: bool) -> None:
+    db = get_db()
+    await db.settings.update_one(
+        {"chat_id": chat_id}, {"$set": {"nightmode": enabled}}, upsert=True
+    )
+
+
+async def get_nightmode(chat_id: int) -> bool:
+    db = get_db()
+    doc = await db.settings.find_one({"chat_id": chat_id})
+    return doc.get("nightmode", False) if doc else False
+
+
 # ── Captcha ───────────────────────────────────────────────────────────────────
 
 async def set_captcha(chat_id: int, enabled: bool) -> None:

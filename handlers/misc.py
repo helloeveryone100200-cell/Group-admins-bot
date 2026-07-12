@@ -11,13 +11,20 @@ from __future__ import annotations
 import time
 import asyncio
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
-from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
+from collections import defaultdict, deque
+
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions,
+    ChatMemberAdministrator, ChatMemberOwner,
+)
+from telegram.ext import (
+    ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters,
+)
 from telegram.constants import ParseMode
 
 import database as db
 from config import OWNER_IDS, BOT_NAME, VERSION
-from helpers.decorators import admin_only, owner_only, bot_admin_required
+from helpers.decorators import admin_only, bot_admin_required
 from helpers.formatting import (
     bold, italic, mono, mention, error, success, header, info_line, warn_msg,
 )
@@ -310,48 +317,9 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     asyncio.create_task(_delete_later(sent, AUTO_DELETE_DELAY))
 
 
-# ── /broadcast ────────────────────────────────────────────────────────────────
-
-@owner_only
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args or []
-    msg = update.effective_message
-    if not args and not msg.reply_to_message:
-        await send_and_delete(
-            msg,
-            error("Usage: /broadcast <message> OR reply to a message with /broadcast"),
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    text = " ".join(args) if args else (msg.reply_to_message.text or "")
-    if not text:
-        await send_and_delete(msg, error("No text to broadcast."), parse_mode=ParseMode.HTML)
-        return
-
-    db_inst = db.get_db()
-    cursor = db_inst.settings.find({}, {"chat_id": 1})
-    sent_count, failed = 0, 0
-    async for doc in cursor:
-        try:
-            await context.bot.send_message(
-                doc["chat_id"],
-                f"{header('📢 Broadcast')}\n\n{text}",
-                parse_mode=ParseMode.HTML,
-            )
-            sent_count += 1
-        except Exception:
-            failed += 1
-        await asyncio.sleep(0.05)
-
-    await send_and_delete(
-        msg,
-        success(
-            f"Broadcast complete.\n"
-            f"{info_line('Sent', str(sent_count))}\n"
-            f"{info_line('Failed', str(failed))}"
-        ),
-        parse_mode=ParseMode.HTML,
-    )
+# NOTE: /broadcast is registered and implemented in handlers/owner.py
+# (owner-only, with all/group/user targeting). A duplicate, unregistered
+# copy used to live here — it was dead code and has been removed.
 
 
 # ── /slowmode ─────────────────────────────────────────────────────────────────
@@ -437,15 +405,24 @@ async def captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ── /antispam ─────────────────────────────────────────────────────────────────
+# State persisted in DB (survives restarts). Enforcement: if a user sends the
+# same text 3+ times within 15 seconds the repeats are deleted and the user
+# is warned — auto-banned once they hit the chat's warn limit.
+# (Distinct from /antiflood which limits message *rate*; antispam targets
+# repeated *identical* content from one user.)
 
-_antispam_cache: dict[int, bool] = {}
+_ANTISPAM_WINDOW = 15        # seconds to look back
+_ANTISPAM_REPEAT_LIMIT = 3   # identical messages before action
+
+_antispam_tracker: dict[tuple[int, int], deque] = defaultdict(deque)
 
 
 @admin_only
 async def antispam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    _antispam_cache[chat.id] = not _antispam_cache.get(chat.id, False)
-    state = bold("ENABLED ✅") if _antispam_cache[chat.id] else bold("DISABLED ❌")
+    new_val = not await db.get_antispam(chat.id)
+    await db.set_antispam(chat.id, new_val)
+    state = bold("ENABLED ✅") if new_val else bold("DISABLED ❌")
     await send_and_delete(
         update.effective_message,
         success(f"Anti-spam: {state}"),
@@ -453,17 +430,59 @@ async def antispam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def antispam_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enforcement: delete repeated identical messages and warn the sender."""
+    msg  = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not user or not chat or not msg or not msg.text:
+        return
+    if not await db.get_antispam(chat.id):
+        return
+    member = await chat.get_member(user.id)
+    if isinstance(member, (ChatMemberAdministrator, ChatMemberOwner)):
+        return
+
+    key = (chat.id, user.id)
+    now = time.monotonic()
+    dq  = _antispam_tracker[key]
+    dq.append((now, msg.text))
+    while dq and now - dq[0][0] > _ANTISPAM_WINDOW:
+        dq.popleft()
+
+    if sum(1 for _, t in dq if t == msg.text) < _ANTISPAM_REPEAT_LIMIT:
+        return
+
+    _antispam_tracker.pop(key, None)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    count   = await db.add_warn(chat.id, user.id, "Spamming duplicate messages")
+    limit_w = await db.get_warn_limit(chat.id)
+    name    = mention(user.full_name, user.id)
+    text    = f"{name} warned for spamming. {bold(f'{count}/{limit_w}')} warnings."
+    if count >= limit_w:
+        try:
+            await chat.ban_member(user.id)
+            text += f"\n{bold('⛔ Auto-banned — warn limit reached!')}"
+        except Exception:
+            pass
+    await send_and_delete(msg, text, parse_mode=ParseMode.HTML)
+
+
 # ── /stickerban ───────────────────────────────────────────────────────────────
-
-_sticker_ban_cache: dict[int, bool] = {}
-
+# State persisted in DB. Enforcement: any sticker sent by a non-admin is
+# deleted immediately while enabled.
 
 @admin_only
 @bot_admin_required
 async def stickerban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    _sticker_ban_cache[chat.id] = not _sticker_ban_cache.get(chat.id, False)
-    state = bold("ENABLED ✅") if _sticker_ban_cache[chat.id] else bold("DISABLED ❌")
+    new_val = not await db.get_stickerban(chat.id)
+    await db.set_stickerban(chat.id, new_val)
+    state = bold("ENABLED ✅") if new_val else bold("DISABLED ❌")
     await send_and_delete(
         update.effective_message,
         success(f"Sticker ban: {state}\n{italic('Stickers will be auto-deleted.')}"),
@@ -471,17 +490,34 @@ async def stickerban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def stickerban_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enforcement: silently delete stickers while stickerban is enabled."""
+    msg  = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not user or not chat or not msg:
+        return
+    if not await db.get_stickerban(chat.id):
+        return
+    member = await chat.get_member(user.id)
+    if isinstance(member, (ChatMemberAdministrator, ChatMemberOwner)):
+        return
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
 # ── /nightmode ────────────────────────────────────────────────────────────────
-
-_night_mode_cache: dict[int, bool] = {}
-
+# State persisted in DB so the toggle stays correct across bot restarts.
 
 @admin_only
 @bot_admin_required
 async def nightmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    _night_mode_cache[chat.id] = not _night_mode_cache.get(chat.id, False)
-    if _night_mode_cache[chat.id]:
+    new_val = not await db.get_nightmode(chat.id)
+    await db.set_nightmode(chat.id, new_val)
+    if new_val:
         await chat.set_permissions(ChatPermissions(can_send_messages=False))
         await send_and_delete(
             update.effective_message,
@@ -521,3 +557,11 @@ def register(app) -> None:
     app.add_handler(CommandHandler("antispam", antispam))
     app.add_handler(CommandHandler("stickerban", stickerban))
     app.add_handler(CommandHandler("nightmode", nightmode))
+    # Enforcement watchers — run after moderation/antiflood handlers (group=5)
+    # so a message already deleted upstream is skipped here without error.
+    app.add_handler(
+        MessageHandler(filters.Sticker.ALL, stickerban_watch), group=6
+    )
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, antispam_watch), group=6
+    )
