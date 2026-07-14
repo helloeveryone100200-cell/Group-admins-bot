@@ -328,8 +328,8 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await chat.ban_member(user.id)
             text += f"\n\n{bold('⛔ Auto-banned — warn limit reached!')}"
-        except Exception:
-            pass
+        except Exception as exc:
+            text += f"\n\n{warn_msg(f'Warn limit reached — auto-ban failed: {str(exc)[:80]}')}"
     await send_and_delete(msg, text, parse_mode=ParseMode.HTML)
 
 

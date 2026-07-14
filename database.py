@@ -403,7 +403,30 @@ async def get_captcha(chat_id: int) -> bool:
     return doc.get("captcha", False)
 
 
-_pending_captcha: dict[tuple[int, int], int] = {}  # (chat_id, user_id) -> msg_id
+# ── Captcha pending state (DB-persisted — survives bot restarts) ──────────────
+
+async def set_pending_captcha(chat_id: int, user_id: int) -> None:
+    """Mark a user as awaiting captcha verification."""
+    db = get_db()
+    await db.pending_captcha.update_one(
+        {"chat_id": chat_id, "user_id": user_id},
+        {"$set": {"chat_id": chat_id, "user_id": user_id}},
+        upsert=True,
+    )
+
+
+async def is_pending_captcha(chat_id: int, user_id: int) -> bool:
+    """Return True if the user has an outstanding captcha challenge."""
+    db = get_db()
+    return bool(await db.pending_captcha.find_one(
+        {"chat_id": chat_id, "user_id": user_id}
+    ))
+
+
+async def clear_pending_captcha(chat_id: int, user_id: int) -> None:
+    """Remove the captcha challenge entry after successful verification."""
+    db = get_db()
+    await db.pending_captcha.delete_one({"chat_id": chat_id, "user_id": user_id})
 
 
 # ── Language (i18n) ───────────────────────────────────────────────────────────

@@ -38,9 +38,10 @@ async def on_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat = result.chat
         await db.register_chat(chat.id, chat.title)
 
-        # captcha check — restrict until verified
+        # captcha check — restrict until verified (state persisted in DB so it
+        # survives bot restarts — users won't be permanently stuck if bot reboots)
         if await db.get_captcha(chat.id):
-            db._pending_captcha[(chat.id, user.id)] = 0
+            await db.set_pending_captcha(chat.id, user.id)
             try:
                 from telegram import ChatPermissions
                 await context.bot.restrict_chat_member(
@@ -70,7 +71,10 @@ async def on_member_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     old_status = result.old_chat_member.status
     new_status = result.new_chat_member.status
-    if old_status == ChatMemberStatus.MEMBER and new_status == ChatMemberStatus.LEFT:
+    # Fire goodbye for both MEMBER→LEFT and RESTRICTED→LEFT
+    # (restricted users can still leave; kick also produces MEMBER→BANNED, not LEFT)
+    _was_present = old_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED)
+    if _was_present and new_status == ChatMemberStatus.LEFT:
         user = result.old_chat_member.user
         chat = result.chat
         gtext = await db.get_goodbye(chat.id)
@@ -187,9 +191,8 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.effective_message
-    key = (chat.id, user.id)
-    if key in db._pending_captcha:
-        del db._pending_captcha[key]
+    if await db.is_pending_captcha(chat.id, user.id):
+        await db.clear_pending_captcha(chat.id, user.id)
         try:
             from telegram import ChatPermissions
             await chat.restrict_member(
@@ -222,7 +225,7 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await send_and_delete(
             msg,
-            error("No pending captcha for you."),
+            error("No pending captcha for you in this group."),
             parse_mode=ParseMode.HTML,
         )
 

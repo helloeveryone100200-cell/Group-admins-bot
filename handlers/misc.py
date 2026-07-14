@@ -299,6 +299,14 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     reported = msg.reply_to_message.from_user
+    # from_user is None for anonymous admin posts, linked channel messages, etc.
+    if not reported:
+        await send_and_delete(
+            msg,
+            error("Cannot report this message — the sender is anonymous or a channel."),
+            parse_mode=ParseMode.HTML,
+        )
+        return
     admins = await chat.get_administrators()
     admin_mentions = " ".join(
         f'<a href="tg://user?id={a.user.id}">⚠️</a>'
@@ -562,13 +570,14 @@ async def setlang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def setlang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the inline button press from /setlang."""
     from locales import ALL_STRINGS   # local import avoids circular at module level
-    query = update.callback_query
-    await query.answer()
+    query     = update.callback_query
     chat      = update.effective_chat
     lang_code = query.data.split(":", 1)[1]
+    # Validate BEFORE answering — a callback query can only be answered once.
     if lang_code not in ALL_STRINGS:
         await query.answer("Unknown language.", show_alert=True)
         return
+    await query.answer()   # single answer for the valid-language path
     await db.set_lang(chat.id, lang_code)
     lang_name = LANG_NAMES[lang_code]
     await query.edit_message_text(

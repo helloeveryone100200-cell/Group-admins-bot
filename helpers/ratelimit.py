@@ -39,7 +39,11 @@ async def sw_count(key: str, window: int, *, record: bool = True) -> int:
         pipe.zcard(key)
         pipe.expire(key, window + 10)
         results = await pipe.execute()
-        return int(results[2])   # zcard result
+        # Index of zcard result depends on whether zadd was included:
+        #   record=True  → [zadd, zremrangebyscore, zcard, expire]  → index 2
+        #   record=False → [zremrangebyscore, zcard, expire]         → index 1
+        zcard_idx = 2 if record else 1
+        return int(results[zcard_idx])
     else:
         dq = _mem[key]
         if record:
