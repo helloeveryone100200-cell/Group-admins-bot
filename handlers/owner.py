@@ -14,7 +14,36 @@ Build order (one command verified before the next):
 """
 from __future__ import annotations
 import asyncio
+import logging
 from html import escape
+
+log = logging.getLogger(__name__)
+
+# ── ARQ task-queue pool (lazy, optional) ──────────────────────────────────────
+# If REDIS_URL is set, broadcast jobs are enqueued so the handler loop stays
+# free during long sends. Falls back to inline if Redis is unavailable.
+
+_arq_pool = None
+
+
+async def _get_arq_pool():
+    """Return a live arq.ArqRedis pool or None if Redis / arq unavailable."""
+    global _arq_pool
+    if _arq_pool is not None:
+        return _arq_pool
+    try:
+        from config import REDIS_URL
+        if not REDIS_URL:
+            return None
+        import arq
+        _arq_pool = await arq.create_pool(
+            arq.connections.RedisSettings.from_dsn(REDIS_URL)
+        )
+        log.info("ARQ pool ready — broadcasts will be queued.")
+        return _arq_pool
+    except Exception as exc:
+        log.warning("ARQ unavailable (%s) — falling back to inline broadcast.", exc)
+        return None
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -305,14 +334,15 @@ _BC_USAGE = (
 
 @owner_only
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg  = update.effective_message
-    args = context.args or []
+    msg    = update.effective_message
+    user   = update.effective_user
+    args   = context.args or []
     if not args:
         await send_and_delete(msg, _BC_USAGE, parse_mode=ParseMode.HTML)
         return
 
     mode = args[0].lower()
-    _db  = db.get_db()
+    pool = await _get_arq_pool()   # None when Redis is unavailable
 
     # ── /broadcast all <text> ─────────────────────────────────────────────────
     if mode == "all":
@@ -322,37 +352,52 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 msg, error("Message text cannot be empty."), parse_mode=ParseMode.HTML
             )
             return
-        sent = failed = 0
-        payload = f"📢 {bold('BROADCAST')}\n\n{text}"
-        # Groups
-        async for doc in _db.settings.find({}, {"chat_id": 1}):
-            try:
-                await context.bot.send_message(
-                    doc["chat_id"], payload, parse_mode=ParseMode.HTML
-                )
-                sent += 1
-            except Exception:
-                failed += 1
-            await asyncio.sleep(_FLOOD_DELAY)
-        # Registered users (DM)
-        async for doc in _db.users.find({}, {"user_id": 1}):
-            try:
-                await context.bot.send_message(
-                    doc["user_id"], payload, parse_mode=ParseMode.HTML
-                )
-                sent += 1
-            except Exception:
-                failed += 1
-            await asyncio.sleep(_FLOOD_DELAY)
-        await send_and_delete(
-            msg,
-            success(
-                f"Broadcast done.\n"
-                f"{info_line('Sent', str(sent))}\n"
-                f"{info_line('Failed', str(failed))}"
-            ),
-            parse_mode=ParseMode.HTML,
-        )
+
+        if pool:
+            # Enqueue — worker process sends in background
+            groups = await db.get_all_groups()
+            await pool.enqueue_job("broadcast_all",
+                                   text=text, admin_id=user.id)
+            await send_and_delete(
+                msg,
+                success(
+                    f"📤 Broadcast queued! Sending to "
+                    f"{bold(str(len(groups)))} group(s) in background."
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            # Inline fallback — runs in handler loop
+            _db = db.get_db()
+            sent = failed = 0
+            payload = f"📢 {bold('BROADCAST')}\n\n{text}"
+            async for doc in _db.settings.find({}, {"chat_id": 1}):
+                try:
+                    await context.bot.send_message(
+                        doc["chat_id"], payload, parse_mode=ParseMode.HTML
+                    )
+                    sent += 1
+                except Exception:
+                    failed += 1
+                await asyncio.sleep(_FLOOD_DELAY)
+            async for doc in _db.users.find({}, {"user_id": 1}):
+                try:
+                    await context.bot.send_message(
+                        doc["user_id"], payload, parse_mode=ParseMode.HTML
+                    )
+                    sent += 1
+                except Exception:
+                    failed += 1
+                await asyncio.sleep(_FLOOD_DELAY)
+            await send_and_delete(
+                msg,
+                success(
+                    f"Broadcast done.\n"
+                    f"{info_line('Sent', str(sent))}\n"
+                    f"{info_line('Failed', str(failed))}"
+                ),
+                parse_mode=ParseMode.HTML,
+            )
 
     # ── /broadcast group <id> <text> ─────────────────────────────────────────
     elif mode == "group":
@@ -366,19 +411,28 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 msg, error("Message text cannot be empty."), parse_mode=ParseMode.HTML
             )
             return
-        try:
-            await context.bot.send_message(
-                cid,
-                f"📢 {bold('MESSAGE FROM OWNER')}\n\n{text}",
-                parse_mode=ParseMode.HTML,
-            )
+        if pool:
+            await pool.enqueue_job("broadcast_group",
+                                   text=text, chat_id=cid, admin_id=user.id)
             await send_and_delete(
                 msg,
-                success(f"Message sent to group {mono(str(cid))}."),
+                success(f"📤 Message to group {mono(str(cid))} queued."),
                 parse_mode=ParseMode.HTML,
             )
-        except Exception as e:
-            await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
+        else:
+            try:
+                await context.bot.send_message(
+                    cid,
+                    f"📢 {bold('MESSAGE FROM OWNER')}\n\n{text}",
+                    parse_mode=ParseMode.HTML,
+                )
+                await send_and_delete(
+                    msg,
+                    success(f"Message sent to group {mono(str(cid))}."),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as e:
+                await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
     # ── /broadcast user <id> <text> ──────────────────────────────────────────
     elif mode == "user":
@@ -392,19 +446,28 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 msg, error("Message text cannot be empty."), parse_mode=ParseMode.HTML
             )
             return
-        try:
-            await context.bot.send_message(
-                uid,
-                f"📢 {bold('MESSAGE FROM OWNER')}\n\n{text}",
-                parse_mode=ParseMode.HTML,
-            )
+        if pool:
+            await pool.enqueue_job("broadcast_user",
+                                   text=text, target_user_id=uid, admin_id=user.id)
             await send_and_delete(
                 msg,
-                success(f"Message sent to user {mono(str(uid))}."),
+                success(f"📤 Message to user {mono(str(uid))} queued."),
                 parse_mode=ParseMode.HTML,
             )
-        except Exception as e:
-            await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
+        else:
+            try:
+                await context.bot.send_message(
+                    uid,
+                    f"📢 {bold('MESSAGE FROM OWNER')}\n\n{text}",
+                    parse_mode=ParseMode.HTML,
+                )
+                await send_and_delete(
+                    msg,
+                    success(f"Message sent to user {mono(str(uid))}."),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as e:
+                await send_and_delete(msg, error(str(e)), parse_mode=ParseMode.HTML)
 
     else:
         await send_and_delete(msg, _BC_USAGE, parse_mode=ParseMode.HTML)

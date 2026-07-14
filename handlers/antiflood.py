@@ -3,8 +3,6 @@ Anti-flood protection.
 All bot command replies auto-delete after 5 minutes.
 """
 from __future__ import annotations
-import time
-from collections import defaultdict, deque
 from telegram import Update, ChatMemberAdministrator, ChatMemberOwner
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters
 from telegram.constants import ParseMode
@@ -12,10 +10,12 @@ from telegram.constants import ParseMode
 import database as db
 from helpers.decorators import admin_only
 from helpers.formatting import bold, mono, mention, error, success, header, italic
+from helpers.ratelimit import sw_count, sw_reset
 from helpers.utils import send_and_delete
 
-# In-memory flood tracker: {(chat_id, user_id): deque of timestamps}
-_tracker: dict[tuple[int, int], deque] = defaultdict(deque)
+# Flood tracking uses Redis sorted-set sliding windows via helpers/ratelimit.py.
+# Keys: "flood:{chat_id}:{user_id}" — persist across bot restarts and are
+# shared across processes, solving the split-brain problem of in-memory deques.
 
 
 # ── /antiflood ────────────────────────────────────────────────────────────────
@@ -107,19 +107,13 @@ async def flood_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if limit == 0:
         return
 
-    key = (chat.id, user.id)
-    now = time.time()
-    dq = _tracker[key]
-    dq.append(now)
-    # keep only messages within 10 seconds
-    while dq and now - dq[0] > 10:
-        dq.popleft()
-
-    if len(dq) < limit:
+    rkey = f"flood:{chat.id}:{user.id}"
+    count = await sw_count(rkey, window=10)
+    if count < limit:
         return
 
-    # flooder detected — clear tracker
-    _tracker.pop(key, None)
+    # flooder detected — reset window
+    await sw_reset(rkey)
     mode = await db.get_flood_mode(chat.id)
 
     try:

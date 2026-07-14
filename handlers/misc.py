@@ -11,8 +11,6 @@ from __future__ import annotations
 import time
 import asyncio
 
-from collections import defaultdict, deque
-
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions,
     ChatMemberAdministrator, ChatMemberOwner,
@@ -28,6 +26,8 @@ from helpers.decorators import admin_only, bot_admin_required
 from helpers.formatting import (
     bold, italic, mono, mention, error, success, header, info_line, warn_msg,
 )
+from helpers.i18n import t, LANG_NAMES
+from helpers.ratelimit import sw_count_text, sw_reset
 from helpers.utils import send_and_delete, AUTO_DELETE_DELAY, _delete_later
 
 
@@ -90,6 +90,7 @@ _CAT = {
         "/captcha — 𝗧𝗼𝗴𝗴𝗹𝗲 𝗰𝗮𝗽𝘁𝗰𝗵𝗮 𝗳𝗼𝗿 𝗻𝗲𝘄 𝗺𝗲𝗺𝗯𝗲𝗿𝘀\n"
         "/antispam — 𝗧𝗼𝗴𝗴𝗹𝗲 𝗮𝗻𝘁𝗶-𝘀𝗽𝗮𝗺\n"
         "/stickerban — 𝗧𝗼𝗴𝗴𝗹𝗲 𝘀𝘁𝗶𝗰𝗸𝗲𝗿 𝗯𝗮𝗻\n"
+        "/setlang — 𝗖𝗵𝗼𝗼𝘀𝗲 𝗯𝗼𝘁 𝗹𝗮𝗻𝗴𝘂𝗮𝗴𝗲 (🇬🇧 𝗘𝗻𝗴𝗹𝗶𝘀𝗵 / 🇲🇲 𝗠𝘆𝗮𝗻𝗺𝗮𝗿 / 🇨🇳 𝗖𝗵𝗶𝗻𝗲𝘀𝗲)\n"
         "/filter &lt;kw&gt; &lt;reply&gt; — 𝗔𝗱𝗱 𝗮𝘂𝘁𝗼-𝗿𝗲𝗽𝗹𝘆 𝗳𝗶𝗹𝘁𝗲𝗿\n"
         "/filters — 𝗟𝗶𝘀𝘁 𝗳𝗶𝗹𝘁𝗲𝗿𝘀\n"
         "/stop &lt;kw&gt; — 𝗥𝗲𝗺𝗼𝘃𝗲 𝗮 𝗳𝗶𝗹𝘁𝗲𝗿\n"
@@ -262,13 +263,12 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # ── /ping ─────────────────────────────────────────────────────────────────────
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    t0 = time.monotonic()
+    chat = update.effective_chat
+    lang = await db.get_lang(chat.id) if chat else "en"
+    t0   = time.monotonic()
     sent = await update.message.reply_text(bold("Pinging…"), parse_mode=ParseMode.HTML)
-    latency = (time.monotonic() - t0) * 1000
-    await sent.edit_text(
-        f"🏓 {bold('Pong!')}\n{info_line('Latency', f'{latency:.2f} ms')}",
-        parse_mode=ParseMode.HTML,
-    )
+    latency = round((time.monotonic() - t0) * 1000)
+    await sent.edit_text(t(lang, "ping", latency=latency), parse_mode=ParseMode.HTML)
     asyncio.create_task(_delete_later(update.message, AUTO_DELETE_DELAY))
     asyncio.create_task(_delete_later(sent, AUTO_DELETE_DELAY))
 
@@ -392,14 +392,14 @@ async def settitle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @admin_only
 async def captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    current = await db.get_captcha(chat.id)
-    new_val = not current
+    chat    = update.effective_chat
+    lang    = await db.get_lang(chat.id)
+    new_val = not await db.get_captcha(chat.id)
     await db.set_captcha(chat.id, new_val)
-    state = bold("ENABLED ✅") if new_val else bold("DISABLED ❌")
+    state = bold(t(lang, "enabled")) if new_val else bold(t(lang, "disabled"))
     await send_and_delete(
         update.effective_message,
-        success(f"Captcha for new members: {state}"),
+        success(t(lang, "captcha_toggled", state=state)),
         parse_mode=ParseMode.HTML,
     )
 
@@ -408,24 +408,25 @@ async def captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # State persisted in DB (survives restarts). Enforcement: if a user sends the
 # same text 3+ times within 15 seconds the repeats are deleted and the user
 # is warned — auto-banned once they hit the chat's warn limit.
+# Tracking uses Redis sorted sets (helpers/ratelimit) so state survives bot
+# restarts and is shared across processes. Falls back to in-memory on no Redis.
 # (Distinct from /antiflood which limits message *rate*; antispam targets
 # repeated *identical* content from one user.)
 
 _ANTISPAM_WINDOW = 15        # seconds to look back
 _ANTISPAM_REPEAT_LIMIT = 3   # identical messages before action
 
-_antispam_tracker: dict[tuple[int, int], deque] = defaultdict(deque)
-
 
 @admin_only
 async def antispam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
+    chat    = update.effective_chat
+    lang    = await db.get_lang(chat.id)
     new_val = not await db.get_antispam(chat.id)
     await db.set_antispam(chat.id, new_val)
-    state = bold("ENABLED ✅") if new_val else bold("DISABLED ❌")
+    state = bold(t(lang, "enabled")) if new_val else bold(t(lang, "disabled"))
     await send_and_delete(
         update.effective_message,
-        success(f"Anti-spam: {state}"),
+        success(t(lang, "antispam_toggled", state=state)),
         parse_mode=ParseMode.HTML,
     )
 
@@ -443,33 +444,30 @@ async def antispam_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if isinstance(member, (ChatMemberAdministrator, ChatMemberOwner)):
         return
 
-    key = (chat.id, user.id)
-    now = time.monotonic()
-    dq  = _antispam_tracker[key]
-    dq.append((now, msg.text))
-    while dq and now - dq[0][0] > _ANTISPAM_WINDOW:
-        dq.popleft()
-
-    if sum(1 for _, t in dq if t == msg.text) < _ANTISPAM_REPEAT_LIMIT:
+    rkey  = f"antispam:{chat.id}:{user.id}"
+    count = await sw_count_text(rkey, msg.text, _ANTISPAM_WINDOW)
+    if count < _ANTISPAM_REPEAT_LIMIT:
         return
 
-    _antispam_tracker.pop(key, None)
+    await sw_reset(rkey)
     try:
         await msg.delete()
     except Exception:
         pass
 
-    count   = await db.add_warn(chat.id, user.id, "Spamming duplicate messages")
+    lang    = await db.get_lang(chat.id)
+    warns   = await db.add_warn(chat.id, user.id, "Spamming duplicate messages")
     limit_w = await db.get_warn_limit(chat.id)
     name    = mention(user.full_name, user.id)
-    text    = f"{name} warned for spamming. {bold(f'{count}/{limit_w}')} warnings."
-    if count >= limit_w:
+    reply   = t(lang, "antispam_warn",
+                name=name, count=warns, limit=limit_w)
+    if warns >= limit_w:
         try:
             await chat.ban_member(user.id)
-            text += f"\n{bold('⛔ Auto-banned — warn limit reached!')}"
+            reply += f"\n{bold(t(lang, 'antispam_banned'))}"
         except Exception:
             pass
-    await send_and_delete(msg, text, parse_mode=ParseMode.HTML)
+    await send_and_delete(msg, reply, parse_mode=ParseMode.HTML)
 
 
 # ── /stickerban ───────────────────────────────────────────────────────────────
@@ -479,13 +477,14 @@ async def antispam_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 @admin_only
 @bot_admin_required
 async def stickerban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
+    chat    = update.effective_chat
+    lang    = await db.get_lang(chat.id)
     new_val = not await db.get_stickerban(chat.id)
     await db.set_stickerban(chat.id, new_val)
-    state = bold("ENABLED ✅") if new_val else bold("DISABLED ❌")
+    state = bold(t(lang, "enabled")) if new_val else bold(t(lang, "disabled"))
     await send_and_delete(
         update.effective_message,
-        success(f"Sticker ban: {state}\n{italic('Stickers will be auto-deleted.')}"),
+        success(t(lang, "stickerban_toggled", state=state)),
         parse_mode=ParseMode.HTML,
     )
 
@@ -514,14 +513,15 @@ async def stickerban_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 @admin_only
 @bot_admin_required
 async def nightmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
+    chat    = update.effective_chat
+    lang    = await db.get_lang(chat.id)
     new_val = not await db.get_nightmode(chat.id)
     await db.set_nightmode(chat.id, new_val)
     if new_val:
         await chat.set_permissions(ChatPermissions(can_send_messages=False))
         await send_and_delete(
             update.effective_message,
-            warn_msg("Night mode ON — chat is locked."),
+            warn_msg(t(lang, "nightmode_on")),
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -535,9 +535,46 @@ async def nightmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ))
         await send_and_delete(
             update.effective_message,
-            success("Night mode OFF — chat is now open."),
+            success(t(lang, "nightmode_off")),
             parse_mode=ParseMode.HTML,
         )
+
+
+# ── /setlang ──────────────────────────────────────────────────────────────────
+
+@admin_only
+async def setlang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show an inline keyboard so admins can pick the bot's language."""
+    chat = update.effective_chat
+    lang = await db.get_lang(chat.id)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(name, callback_data=f"setlang:{code}")]
+        for code, name in LANG_NAMES.items()
+    ])
+    await send_and_delete(
+        update.effective_message,
+        t(lang, "setlang_choose"),
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def setlang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the inline button press from /setlang."""
+    from locales import ALL_STRINGS   # local import avoids circular at module level
+    query = update.callback_query
+    await query.answer()
+    chat      = update.effective_chat
+    lang_code = query.data.split(":", 1)[1]
+    if lang_code not in ALL_STRINGS:
+        await query.answer("Unknown language.", show_alert=True)
+        return
+    await db.set_lang(chat.id, lang_code)
+    lang_name = LANG_NAMES[lang_code]
+    await query.edit_message_text(
+        t(lang_code, "setlang_set", lang_name=lang_name),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 # ── register ──────────────────────────────────────────────────────────────────
@@ -550,13 +587,15 @@ def register(app) -> None:
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("report", report))
     # NOTE: /broadcast is registered in handlers/owner.py (owner-only, extended syntax)
-    app.add_handler(CommandHandler("slowmode", slowmode))
-    app.add_handler(CommandHandler("setdesc", setdesc))
-    app.add_handler(CommandHandler("settitle", settitle))
-    app.add_handler(CommandHandler("captcha", captcha))
-    app.add_handler(CommandHandler("antispam", antispam))
+    app.add_handler(CommandHandler("slowmode",  slowmode))
+    app.add_handler(CommandHandler("setdesc",   setdesc))
+    app.add_handler(CommandHandler("settitle",  settitle))
+    app.add_handler(CommandHandler("captcha",   captcha))
+    app.add_handler(CommandHandler("antispam",  antispam))
     app.add_handler(CommandHandler("stickerban", stickerban))
     app.add_handler(CommandHandler("nightmode", nightmode))
+    app.add_handler(CommandHandler("setlang",   setlang))
+    app.add_handler(CallbackQueryHandler(setlang_callback, pattern=r"^setlang:"))
     # Enforcement watchers — run after moderation/antiflood handlers (group=5)
     # so a message already deleted upstream is skipped here without error.
     app.add_handler(

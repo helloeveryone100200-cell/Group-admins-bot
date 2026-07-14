@@ -14,6 +14,10 @@ OWNER_IDS: list[int] = [
 
 PORT: int = int(os.environ.get("PORT", 8080))
 
+# Optional — Redis URL for caching, rate-limiting, and ARQ task queue.
+# Leave unset to run without Redis (bot stays fully functional, just slower).
+REDIS_URL: str | None = os.environ.get("REDIS_URL") or None
+
 # Validate required vars on startup
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is not set!")
@@ -24,4 +28,4 @@ if not OWNER_IDS:
 
 # ─── Bot identity ──────────────────────────────
 BOT_NAME = "Group Admin Bot"
-VERSION  = "2.0.0"
+VERSION  = "3.0.0"

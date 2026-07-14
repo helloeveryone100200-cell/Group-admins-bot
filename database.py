@@ -1,11 +1,15 @@
 """
-MongoDB async operations via Motor.
-All collections are lazily initialised on first use.
+MongoDB async operations via Motor, with Redis caching (cache.py).
+
+Read-path:  check Redis first → on miss, query MongoDB and populate cache.
+Write-path: update MongoDB → invalidate the relevant cache key(s).
+Fallback:   if Redis is unavailable, every function works directly via MongoDB.
 """
 from __future__ import annotations
 
 import motor.motor_asyncio
 from config import MONGO_URI
+from cache import cget, cset, cdel, SETTINGS_TTL, WARN_TTL, LIST_TTL, BLOCK_TTL
 
 _client: motor.motor_asyncio.AsyncIOMotorClient | None = None
 _db: motor.motor_asyncio.AsyncIOMotorDatabase | None = None
@@ -17,6 +21,28 @@ def get_db() -> motor.motor_asyncio.AsyncIOMotorDatabase:
         _client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
         _db = _client["admin_bot"]
     return _db
+
+
+# ── Settings cache helpers ─────────────────────────────────────────────────────
+# One Redis key per group holds the full settings document.
+# All settings reads go through _get_settings(); every settings write calls
+# _invalidate_settings() so the cache is always consistent.
+
+async def _get_settings(chat_id: int) -> dict:
+    key = f"settings:{chat_id}"
+    cached = await cget(key)
+    if cached is not None:
+        return cached
+    db = get_db()
+    doc = await db.settings.find_one({"chat_id": chat_id})
+    result: dict = dict(doc) if doc else {}
+    result.pop("_id", None)   # ObjectId is not JSON-serialisable
+    await cset(key, result, SETTINGS_TTL)
+    return result
+
+
+async def _invalidate_settings(chat_id: int) -> None:
+    await cdel(f"settings:{chat_id}")
 
 
 # ── Warnings ──────────────────────────────────────────────────────────────────
@@ -31,13 +57,20 @@ async def add_warn(chat_id: int, user_id: int, reason: str) -> int:
         {"$set": {"warns": warns}},
         upsert=True,
     )
+    await cdel(f"warns:{chat_id}:{user_id}")
     return len(warns)
 
 
 async def get_warns(chat_id: int, user_id: int) -> list[str]:
+    key = f"warns:{chat_id}:{user_id}"
+    cached = await cget(key)
+    if cached is not None:
+        return cached
     db = get_db()
     doc = await db.warnings.find_one({"chat_id": chat_id, "user_id": user_id})
-    return doc["warns"] if doc else []
+    result = doc["warns"] if doc else []
+    await cset(key, result, WARN_TTL)
+    return result
 
 
 async def remove_warn(chat_id: int, user_id: int) -> int:
@@ -50,18 +83,19 @@ async def remove_warn(chat_id: int, user_id: int) -> int:
         {"chat_id": chat_id, "user_id": user_id},
         {"$set": {"warns": warns}},
     )
+    await cdel(f"warns:{chat_id}:{user_id}")
     return len(warns)
 
 
 async def reset_warns(chat_id: int, user_id: int) -> None:
     db = get_db()
     await db.warnings.delete_one({"chat_id": chat_id, "user_id": user_id})
+    await cdel(f"warns:{chat_id}:{user_id}")
 
 
 async def get_warn_limit(chat_id: int) -> int:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get("warn_limit", 3) if doc else 3
+    doc = await _get_settings(chat_id)
+    return doc.get("warn_limit", 3)
 
 
 async def set_warn_limit(chat_id: int, limit: int) -> None:
@@ -69,6 +103,7 @@ async def set_warn_limit(chat_id: int, limit: int) -> None:
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"warn_limit": limit}}, upsert=True
     )
+    await _invalidate_settings(chat_id)
 
 
 # ── Welcome / Goodbye ─────────────────────────────────────────────────────────
@@ -172,6 +207,7 @@ async def add_blacklist(chat_id: int, word: str) -> None:
         {"$addToSet": {"words": word.lower()}},
         upsert=True,
     )
+    await cdel(f"blacklist:{chat_id}")
 
 
 async def remove_blacklist(chat_id: int, word: str) -> bool:
@@ -182,19 +218,25 @@ async def remove_blacklist(chat_id: int, word: str) -> bool:
     await db.blacklist.update_one(
         {"chat_id": chat_id}, {"$pull": {"words": word.lower()}}
     )
+    await cdel(f"blacklist:{chat_id}")
     return True
 
 
 async def get_blacklist(chat_id: int) -> list[str]:
+    key = f"blacklist:{chat_id}"
+    cached = await cget(key)
+    if cached is not None:
+        return cached
     db = get_db()
     doc = await db.blacklist.find_one({"chat_id": chat_id})
-    return doc.get("words", []) if doc else []
+    result = doc.get("words", []) if doc else []
+    await cset(key, result, LIST_TTL)
+    return result
 
 
 async def get_blacklist_mode(chat_id: int) -> str:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get("blacklist_mode", "delete") if doc else "delete"
+    doc = await _get_settings(chat_id)
+    return doc.get("blacklist_mode", "delete")
 
 
 async def set_blacklist_mode(chat_id: int, mode: str) -> None:
@@ -202,6 +244,7 @@ async def set_blacklist_mode(chat_id: int, mode: str) -> None:
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"blacklist_mode": mode}}, upsert=True
     )
+    await _invalidate_settings(chat_id)
 
 
 # ── Filters ───────────────────────────────────────────────────────────────────
@@ -243,21 +286,20 @@ async def delete_all_filters(chat_id: int) -> None:
 
 
 # ── Anti-flood ────────────────────────────────────────────────────────────────
-
-_flood_tracker: dict[tuple[int, int], list] = {}
-
+# Flood tracking itself is handled in helpers/ratelimit.py via Redis sorted sets.
+# The DB functions here persist the limit/mode settings only.
 
 async def set_flood_limit(chat_id: int, limit: int) -> None:
     db = get_db()
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"flood_limit": limit}}, upsert=True
     )
+    await _invalidate_settings(chat_id)
 
 
 async def get_flood_limit(chat_id: int) -> int:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get("flood_limit", 0) if doc else 0
+    doc = await _get_settings(chat_id)
+    return doc.get("flood_limit", 0)
 
 
 async def set_flood_mode(chat_id: int, mode: str) -> None:
@@ -265,12 +307,12 @@ async def set_flood_mode(chat_id: int, mode: str) -> None:
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"flood_mode": mode}}, upsert=True
     )
+    await _invalidate_settings(chat_id)
 
 
 async def get_flood_mode(chat_id: int) -> str:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get("flood_mode", "mute") if doc else "mute"
+    doc = await _get_settings(chat_id)
+    return doc.get("flood_mode", "mute")
 
 
 # ── Locks ─────────────────────────────────────────────────────────────────────
@@ -282,12 +324,12 @@ async def set_lock(chat_id: int, lock_type: str, value: bool) -> None:
         {"$set": {f"lock_{lock_type}": value}},
         upsert=True,
     )
+    await _invalidate_settings(chat_id)
 
 
 async def get_lock(chat_id: int, lock_type: str) -> bool:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get(f"lock_{lock_type}", False) if doc else False
+    doc = await _get_settings(chat_id)
+    return doc.get(f"lock_{lock_type}", False)
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -302,21 +344,22 @@ async def register_chat(chat_id: int, title: str) -> None:
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"title": title}}, upsert=True
     )
+    # Title changes are low-priority; let the cache expire naturally.
 
 
-# ── Antispam / Stickerban / Nightmode ────────────────────────────────────────
+# ── Antispam / Stickerban / Nightmode ─────────────────────────────────────────
 
 async def set_antispam(chat_id: int, enabled: bool) -> None:
     db = get_db()
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"antispam": enabled}}, upsert=True
     )
+    await _invalidate_settings(chat_id)
 
 
 async def get_antispam(chat_id: int) -> bool:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get("antispam", False) if doc else False
+    doc = await _get_settings(chat_id)
+    return doc.get("antispam", False)
 
 
 async def set_stickerban(chat_id: int, enabled: bool) -> None:
@@ -324,12 +367,12 @@ async def set_stickerban(chat_id: int, enabled: bool) -> None:
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"stickerban": enabled}}, upsert=True
     )
+    await _invalidate_settings(chat_id)
 
 
 async def get_stickerban(chat_id: int) -> bool:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get("stickerban", False) if doc else False
+    doc = await _get_settings(chat_id)
+    return doc.get("stickerban", False)
 
 
 async def set_nightmode(chat_id: int, enabled: bool) -> None:
@@ -337,12 +380,12 @@ async def set_nightmode(chat_id: int, enabled: bool) -> None:
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"nightmode": enabled}}, upsert=True
     )
+    await _invalidate_settings(chat_id)
 
 
 async def get_nightmode(chat_id: int) -> bool:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get("nightmode", False) if doc else False
+    doc = await _get_settings(chat_id)
+    return doc.get("nightmode", False)
 
 
 # ── Captcha ───────────────────────────────────────────────────────────────────
@@ -352,50 +395,54 @@ async def set_captcha(chat_id: int, enabled: bool) -> None:
     await db.settings.update_one(
         {"chat_id": chat_id}, {"$set": {"captcha": enabled}}, upsert=True
     )
+    await _invalidate_settings(chat_id)
 
 
 async def get_captcha(chat_id: int) -> bool:
-    db = get_db()
-    doc = await db.settings.find_one({"chat_id": chat_id})
-    return doc.get("captcha", False) if doc else False
+    doc = await _get_settings(chat_id)
+    return doc.get("captcha", False)
 
 
 _pending_captcha: dict[tuple[int, int], int] = {}  # (chat_id, user_id) -> msg_id
 
 
+# ── Language (i18n) ───────────────────────────────────────────────────────────
+
+async def set_lang(chat_id: int, lang: str) -> None:
+    """Persist the UI language for a group ('en' / 'my' / 'zh')."""
+    db = get_db()
+    await db.settings.update_one(
+        {"chat_id": chat_id}, {"$set": {"lang": lang}}, upsert=True
+    )
+    await _invalidate_settings(chat_id)
+
+
+async def get_lang(chat_id: int) -> str:
+    """Return the UI language code for a group. Defaults to 'en'."""
+    doc = await _get_settings(chat_id)
+    return doc.get("lang", "en")
+
+
 # ── Schedules ─────────────────────────────────────────────────────────────────
 
 async def _next_sched_id(chat_id: int) -> int:
-    """
-    Atomically increment and return the next schedule ID for this chat.
-    IDs are per-chat sequential integers starting at 1.
-    """
     db = get_db()
     result = await db.sched_counters.find_one_and_update(
         {"chat_id": chat_id},
         {"$inc": {"seq": 1}},
         upsert=True,
-        return_document=True,  # motor uses True for ReturnDocument.AFTER
+        return_document=True,
     )
     return result["seq"]
 
 
 async def save_schedule(chat_id: int, name: str, doc: dict) -> int:
-    """
-    Save or update a schedule for a chat.
-    Returns the sched_id assigned to this schedule.
-    doc must include at minimum: schedule_type, message
-    For 'always': hour, minute
-    For 'one_time': target_dt (ISO string)
-    """
     db = get_db()
     existing = await db.schedules.find_one({"chat_id": chat_id, "name": name})
     if existing:
-        # Keep the same sched_id on update
         sched_id = existing["sched_id"]
     else:
         sched_id = await _next_sched_id(chat_id)
-
     payload = {"chat_id": chat_id, "name": name, "sched_id": sched_id, **doc}
     await db.schedules.update_one(
         {"chat_id": chat_id, "name": name},
@@ -416,14 +463,12 @@ async def get_schedule_by_id(chat_id: int, sched_id: int) -> dict | None:
 
 
 async def get_all_schedules(chat_id: int) -> list[dict]:
-    """Return all schedules for one chat, sorted by sched_id."""
     db = get_db()
     cursor = db.schedules.find({"chat_id": chat_id}).sort("sched_id", 1)
     return [doc async for doc in cursor]
 
 
 async def get_all_schedules_global() -> list[dict]:
-    """Return every schedule across all chats (used on startup restore)."""
     db = get_db()
     cursor = db.schedules.find({})
     return [doc async for doc in cursor]
@@ -436,7 +481,6 @@ async def delete_schedule(chat_id: int, name: str) -> bool:
 
 
 async def delete_schedule_by_id(chat_id: int, sched_id: int) -> dict | None:
-    """Delete by numeric ID. Returns the deleted doc (for name lookup), or None."""
     db = get_db()
     doc = await db.schedules.find_one_and_delete(
         {"chat_id": chat_id, "sched_id": sched_id}
@@ -447,7 +491,6 @@ async def delete_schedule_by_id(chat_id: int, sched_id: int) -> dict | None:
 # ── User tracking ─────────────────────────────────────────────────────────────
 
 async def register_user(user_id: int, username: str | None, full_name: str) -> None:
-    """Upsert a user record; called on every bot interaction via middleware."""
     db = get_db()
     await db.users.update_one(
         {"user_id": user_id},
@@ -477,17 +520,25 @@ async def block_user(user_id: int) -> None:
         {"$set": {"user_id": user_id}},
         upsert=True,
     )
+    await cdel(f"blocked:u:{user_id}")
 
 
 async def unblock_user(user_id: int) -> bool:
     db = get_db()
     result = await db.blocked_users.delete_one({"user_id": user_id})
+    await cdel(f"blocked:u:{user_id}")
     return result.deleted_count > 0
 
 
 async def is_user_blocked(user_id: int) -> bool:
+    key = f"blocked:u:{user_id}"
+    cached = await cget(key)
+    if cached is not None:
+        return cached
     db = get_db()
-    return bool(await db.blocked_users.find_one({"user_id": user_id}))
+    result = bool(await db.blocked_users.find_one({"user_id": user_id}))
+    await cset(key, result, BLOCK_TTL)
+    return result
 
 
 async def count_blocked_users() -> int:
@@ -504,17 +555,25 @@ async def block_group(chat_id: int, title: str = "") -> None:
         {"$set": {"chat_id": chat_id, "title": title or str(chat_id)}},
         upsert=True,
     )
+    await cdel(f"blocked:g:{chat_id}")
 
 
 async def unblock_group(chat_id: int) -> bool:
     db = get_db()
     result = await db.blocked_groups.delete_one({"chat_id": chat_id})
+    await cdel(f"blocked:g:{chat_id}")
     return result.deleted_count > 0
 
 
 async def is_group_blocked(chat_id: int) -> bool:
+    key = f"blocked:g:{chat_id}"
+    cached = await cget(key)
+    if cached is not None:
+        return cached
     db = get_db()
-    return bool(await db.blocked_groups.find_one({"chat_id": chat_id}))
+    result = bool(await db.blocked_groups.find_one({"chat_id": chat_id}))
+    await cset(key, result, BLOCK_TTL)
+    return result
 
 
 async def count_blocked_groups() -> int:

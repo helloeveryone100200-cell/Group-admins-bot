@@ -2,3 +2,8 @@ python-telegram-bot==21.5
 motor==3.5.1
 flask==3.0.3
 pymongo==4.8.0
+
+# ── Redis caching + rate-limiting + ARQ task queue ────────────────────────────
+# Redis is optional: set REDIS_URL env var to enable. Bot runs fine without it.
+redis>=5.0.0
+arq>=0.25.0

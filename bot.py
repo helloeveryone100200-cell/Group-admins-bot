@@ -14,6 +14,9 @@ from config import BOT_TOKEN, BOT_NAME, VERSION, OWNER_IDS
 from keep_alive import keep_alive
 import database as db
 
+import importlib
+from pathlib import Path
+
 import handlers.admin      as h_admin
 import handlers.promote    as h_promote
 import handlers.pins       as h_pins
@@ -69,6 +72,23 @@ async def _update_middleware(update: Update, context) -> None:
             raise ApplicationHandlerStop()
 
 
+def _load_plugins(app: Application) -> None:
+    """Auto-load every plugin/*.py that exposes a register(app) function."""
+    plugin_dir = Path(__file__).parent / "plugins"
+    if not plugin_dir.exists():
+        return
+    for f in sorted(plugin_dir.glob("*.py")):
+        if f.name.startswith("_"):
+            continue
+        try:
+            mod = importlib.import_module(f"plugins.{f.stem}")
+            if hasattr(mod, "register"):
+                mod.register(app)
+                log.info("✅ Plugin loaded: %s", f.stem)
+        except Exception as exc:
+            log.warning("❌ Plugin %s failed to load: %s", f.stem, exc)
+
+
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
     # Group=-1: runs first, registers users/groups, enforces global blocks
@@ -87,6 +107,7 @@ def build_app() -> Application:
     h_antiflood.register(app)
     h_info.register(app)
     h_schedule.register(app)
+    _load_plugins(app)          # drop-in plugins from plugins/
     app.add_error_handler(error_handler)
     return app
 

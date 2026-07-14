@@ -1,4 +1,5 @@
 services:
+  # ── Main bot (web + keep-alive) ────────────────────────────────────────────
   - type: web
     name: group-admin-bot
     env: python
@@ -11,3 +12,21 @@ services:
         sync: false          # Set manually in Render dashboard
       - key: OWNER_IDS
         sync: false          # Set manually in Render dashboard (comma-separated)
+      - key: REDIS_URL
+        sync: false          # Optional — set to enable caching, rate-limiting & ARQ
+
+  # ── ARQ background worker (only needed when REDIS_URL is set) ──────────────
+  - type: worker
+    name: group-admin-bot-worker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: arq workers.worker.WorkerSettings
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: OWNER_IDS
+        sync: false
+      - key: REDIS_URL
+        sync: false
